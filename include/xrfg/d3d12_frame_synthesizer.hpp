@@ -212,7 +212,7 @@ public:
         float extrapolation_fraction = 1.5F,
         std::shared_ptr<const DlssMotionVectorSet> motion_vectors = {}) noexcept;
 
-    // Cross-Eye Stereo-Temporal Synthesis (PureDark AFW / Luke Ross AER mode):
+    // Cross-Eye Stereo-Temporal Synthesis (alternate-eye stereo reconstruction):
     // reconstructs the target stereo eye view from the freshly rendered
     // opposite eye in current using the exact 6-DOF stereo baseline (IPD +
     // orientation delta + depth) and fills stereo disocclusion holes from the
@@ -225,6 +225,23 @@ public:
         std::uint32_t current_destination_index,
         D3D12FrameSynthesisTicket* ticket,
         std::shared_ptr<const DlssMotionVectorSet> motion_vectors = {}) noexcept;
+
+    // Symmetric Pose-Centered Midpoint Synthesis (Phase 2):
+    // Synthesizes the intermediate frame directly in the interpolated display
+    // pose P_S = slerp(P_A, P_B, interpolation_fraction), warping both frame A
+    // (P_A -> P_S) and frame B (P_B -> P_S) into P_S's camera frustum.
+    [[nodiscard]] HRESULT submit_pose_centered_pair(
+        const D3D12HistoryCaptureTicket& current,
+        std::span<const D3D12ReprojectionView> current_source_views,
+        std::span<const D3D12ReprojectionView> midpoint_target_views,
+        std::uint32_t synthetic_destination_index,
+        std::uint32_t current_destination_index,
+        D3D12FrameSynthesisTicket* ticket,
+        std::optional<OverlayPlacement> debug_marker = std::nullopt,
+        std::shared_ptr<const DlssMotionVectorSet> motion_vectors = {},
+        bool defer_current_copy = false,
+        float interpolation_fraction = 0.5F,
+        std::optional<D3D12ExtraSynthetic> extra_synthetic = std::nullopt) noexcept;
 
     // Executes the current output's copy, which submit_pair records but
     // deliberately leaves unsubmitted. The synthetic frame is handed to the

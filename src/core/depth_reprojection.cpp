@@ -510,7 +510,7 @@ CrossEyeSynthesisSample reproject_cross_eye_stereo(
         // If the surface actually present at other_eye_mapped.(x, y) in the opposite eye
         // is significantly closer than the reprojected depth of our target pixel, then
         // a foreground object in the opposite eye is occluding our target surface
-        // (stereo disocclusion, matching PDAFWPlugin afw_78b40.ll).
+        // (stereo disocclusion).
         const float expected_depth = other_eye_mapped.reprojected_linear_depth;
         const float occlusion_delta = expected_depth - other_eye_sampled_linear_depth;
         const float tolerance = std::max(0.025F * expected_depth, 0.015F);
@@ -531,6 +531,201 @@ CrossEyeSynthesisSample reproject_cross_eye_stereo(
         sample.other_eye_weight = 1.0F;
     }
     return sample;
+}
+
+SymmetricPoseMappings6Dof make_symmetric_pose_mappings_6dof(
+    const Pose& previous_pose,
+    const FieldOfViewTangents& previous_tangents,
+    const ViewRect2D& previous_rect,
+    const Pose& current_pose,
+    const FieldOfViewTangents& current_tangents,
+    const ViewRect2D& current_rect,
+    float alpha,
+    const DepthProjectionParams& depth_params,
+    float max_extrapolation_alpha) noexcept {
+    SymmetricPoseMappings6Dof result{};
+    const float safe_max = std::clamp(max_extrapolation_alpha, 1.0F, 3.0F);
+    const float clamped_alpha = std::isfinite(alpha)
+        ? std::clamp(alpha, 0.0F, safe_max)
+        : 0.5F;
+    result.clamped_alpha = clamped_alpha;
+    result.synthetic_pose = extrapolate_pose(previous_pose, current_pose, clamped_alpha);
+
+    const float fov_blend = std::clamp(clamped_alpha, 0.0F, 1.0F);
+    result.synthetic_tangents = {
+        previous_tangents.left + (current_tangents.left - previous_tangents.left) * fov_blend,
+        previous_tangents.right + (current_tangents.right - previous_tangents.right) * fov_blend,
+        previous_tangents.up + (current_tangents.up - previous_tangents.up) * fov_blend,
+        previous_tangents.down + (current_tangents.down - previous_tangents.down) * fov_blend,
+    };
+
+    // Mapping from synthetic camera P_S to previous capture camera P_A (source = P_A, target = P_S)
+    result.synthetic_to_previous = make_camera_mapping_6dof(
+        previous_pose,
+        previous_tangents,
+        previous_rect,
+        result.synthetic_pose,
+        result.synthetic_tangents,
+        current_rect,
+        depth_params);
+
+    // Mapping from synthetic camera P_S to current capture camera P_B (source = P_B, target = P_S)
+    result.synthetic_to_current = make_camera_mapping_6dof(
+        current_pose,
+        current_tangents,
+        current_rect,
+        result.synthetic_pose,
+        result.synthetic_tangents,
+        current_rect,
+        depth_params);
+
+    return result;
+}
+
+float pose_angular_error_degrees(
+    const Quaternion& first,
+    const Quaternion& second) noexcept {
+    const Quaternion q1 = normalize(first);
+    const Quaternion q2 = normalize(second);
+    const float abs_dot = std::clamp(
+        std::abs(q1.x * q2.x + q1.y * q2.y + q1.z * q2.z + q1.w * q2.w),
+        0.0F,
+        1.0F);
+    const float angle_rad = 2.0F * std::acos(abs_dot);
+    constexpr float kRadToDeg = 180.0F / 3.14159265358979323846F;
+    return angle_rad * kRadToDeg;
+}
+
+float pose_positional_error_millimeters(
+    const Vec3& first,
+    const Vec3& second) noexcept {
+    const float dx = first.x - second.x;
+    const float dy = first.y - second.y;
+    const float dz = first.z - second.z;
+    const float dist_m = std::sqrt(dx * dx + dy * dy + dz * dz);
+    return std::isfinite(dist_m) ? (dist_m * 1000.0F) : 0.0F;
+}
+
+float compute_edge_feather_weight(
+    float pixel_x,
+    float pixel_y,
+    const ViewRect2D& rect,
+    float feather_pixels) noexcept {
+    if (!std::isfinite(pixel_x) || !std::isfinite(pixel_y) ||
+        rect.width <= 0.0F || rect.height <= 0.0F) {
+        return 0.0F;
+    }
+    const float min_x = rect.offset_x - 0.5F;
+    const float min_y = rect.offset_y - 0.5F;
+    const float max_x = min_x + rect.width;
+    const float max_y = min_y + rect.height;
+    if (pixel_x < min_x || pixel_x > max_x || pixel_y < min_y || pixel_y > max_y) {
+        return 0.0F;
+    }
+    if (!(feather_pixels > 0.0F) || !std::isfinite(feather_pixels)) {
+        return 1.0F;
+    }
+    const float dist_left = pixel_x - min_x;
+    const float dist_right = max_x - pixel_x;
+    const float dist_top = pixel_y - min_y;
+    const float dist_bottom = max_y - pixel_y;
+    const float min_dist = std::min(
+        std::min(dist_left, dist_right),
+        std::min(dist_top, dist_bottom));
+    const float t = std::clamp(min_dist / feather_pixels, 0.0F, 1.0F);
+    // Hermite smoothstep for C1 continuous edge transition
+    return t * t * (3.0F - 2.0F * t);
+}
+
+DepthNeighborhood3x3 analyze_depth_neighborhood_3x3(
+    const std::array<float, 9>& linear_depths_meters,
+    float discontinuity_threshold_ratio) noexcept {
+    DepthNeighborhood3x3 out{};
+    out.center_depth = linear_depths_meters[4];
+    float min_z = 1.0e9F;
+    float max_z = 0.0F;
+    bool any_valid = false;
+    for (float z : linear_depths_meters) {
+        if (std::isfinite(z) && z > kMinLinearDepthMeters) {
+            min_z = std::min(min_z, z);
+            max_z = std::max(max_z, z);
+            any_valid = true;
+        }
+    }
+    if (!any_valid) {
+        return out;
+    }
+    out.foreground_dilated_depth = min_z;
+    out.background_eroded_depth = max_z;
+    const float rel_gap = (max_z - min_z) / std::max(min_z, 0.01F);
+    out.relative_discontinuity = rel_gap;
+    const float threshold = std::max(discontinuity_threshold_ratio, 0.005F);
+    out.lock_foreground = rel_gap > threshold;
+    return out;
+}
+
+float compute_static_motion_damping_factor(
+    float mv_x,
+    float mv_y,
+    float luma_abs_difference,
+    float min_motion_pixels,
+    float full_motion_pixels,
+    float static_luma_threshold) noexcept {
+    if (!std::isfinite(mv_x) || !std::isfinite(mv_y) ||
+        !std::isfinite(luma_abs_difference)) {
+        return 0.0F;
+    }
+    const float mag = std::sqrt(mv_x * mv_x + mv_y * mv_y);
+    const float ramp_span = std::max(full_motion_pixels - min_motion_pixels, 1.0e-3F);
+    const float t_mag = std::clamp((mag - min_motion_pixels) / ramp_span, 0.0F, 1.0F);
+    const float smooth_mag = t_mag * t_mag * (3.0F - 2.0F * t_mag);
+
+    const float luma_thresh = std::max(static_luma_threshold, 1.0e-4F);
+    const float t_luma = std::clamp(luma_abs_difference / luma_thresh, 0.0F, 1.0F);
+    const float smooth_luma = t_luma * t_luma * (3.0F - 2.0F * t_luma);
+
+    // If both motion magnitude is small AND photometric difference is tiny,
+    // damp the motion vector to zero to prevent HUD/grid shimmer.
+    return std::max(smooth_mag, smooth_luma);
+}
+
+MotionDepthSample repair_distrusted_motion_vector_ring(
+    const RingCandidateMotionSample& center,
+    const std::array<RingCandidateMotionSample, 8>& ring_neighbors) noexcept {
+    MotionDepthSample output{
+        center.mv_x,
+        center.mv_y,
+        center.linear_depth,
+        center.linear_depth > kMinLinearDepthMeters,
+    };
+    if (center.distrust <= 0.5F) {
+        return output;
+    }
+
+    const float target_z = std::max(center.linear_depth, 0.01F);
+    float best_score = 1.0e9F;
+    std::size_t best_index = 8;
+    for (std::size_t i = 0; i < ring_neighbors.size(); ++i) {
+        const auto& cand = ring_neighbors[i];
+        if (!std::isfinite(cand.mv_x) || !std::isfinite(cand.mv_y) ||
+            cand.distrust > 0.75F) {
+            continue;
+        }
+        const float rel_z_diff =
+            std::abs(cand.linear_depth - target_z) / target_z;
+        const float score = cand.distrust * 2.0F + rel_z_diff * 10.0F;
+        if (score < best_score) {
+            best_score = score;
+            best_index = i;
+        }
+    }
+
+    if (best_index < ring_neighbors.size()) {
+        output.mv_x = ring_neighbors[best_index].mv_x;
+        output.mv_y = ring_neighbors[best_index].mv_y;
+        output.linear_depth = ring_neighbors[best_index].linear_depth;
+    }
+    return output;
 }
 
 }  // namespace xrfg

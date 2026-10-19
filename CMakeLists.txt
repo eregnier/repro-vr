@@ -47,7 +47,8 @@ add_library(xrfg_core STATIC
     src/core/fps_overlay_model.cpp
     src/core/image.cpp
     src/core/optical_flow.cpp
-    src/core/pose.cpp)
+    src/core/pose.cpp
+    src/core/reprojection_telemetry.cpp)
 target_include_directories(xrfg_core PUBLIC include)
 target_compile_features(xrfg_core PUBLIC cxx_std_20)
 
@@ -605,7 +606,7 @@ if(WIN32 AND XRFG_BUILD_LAYER)
             add_test(NAME xrfg_release_pacing_${case_name} COMMAND xrfg_layer_manual_disarm_tests
                 $<TARGET_FILE:XR_APILAYER_XRFrameBridge_diagnostic> pacing ${case} 3 3 --min-fps=40)
             set_tests_properties(xrfg_release_pacing_${case_name} PROPERTIES
-                TIMEOUT 60 LABELS needs_gpu_timing)
+                TIMEOUT 60 LABELS needs_gpu_timing RESOURCE_LOCK gpu_timing)
         endforeach()
         # The flight recorder switched on, off and on again in a running
         # session: the session records from before the switch head the file.
@@ -826,7 +827,7 @@ if(WIN32 AND XRFG_BUILD_LAYER)
             xrfg_layer_triple_steamvr-destroy-space
             xrfg_layer_triple_flight-simulator
             xrfg_layer_triple_flight-destroy-swapchain
-            PROPERTIES LABELS needs_gpu_timing)
+            PROPERTIES LABELS needs_gpu_timing RESOURCE_LOCK gpu_timing)
         # And through the Vulkan interop, which publishes both synthetics.
         # A Vulkan session never takes a presenter, so this is the inline
         # path; the scenario's own counts are a pair's.
@@ -1081,6 +1082,20 @@ if(WIN32 AND XRFG_BUILD_LAYER)
             target_compile_definitions(xrfg_d3d12_depth_synthesis_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
         endif()
         add_test(NAME xrfg_d3d12_depth_synthesis_tests COMMAND xrfg_d3d12_depth_synthesis_tests)
+
+        add_executable(xrfg_phase2_calibration_tests
+            tests/phase2_calibration_tests.cpp)
+        target_include_directories(xrfg_phase2_calibration_tests PRIVATE include)
+        target_link_libraries(xrfg_phase2_calibration_tests PRIVATE
+            xrfg_d3d12_history
+            d3d12
+            dxgi)
+        target_compile_features(xrfg_phase2_calibration_tests PRIVATE cxx_std_20)
+        if(MSVC)
+            target_compile_options(xrfg_phase2_calibration_tests PRIVATE /W4 /permissive- /EHsc)
+            target_compile_definitions(xrfg_phase2_calibration_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        endif()
+        add_test(NAME xrfg_phase2_calibration_tests COMMAND xrfg_phase2_calibration_tests)
 
         add_executable(xrfg_nvidia_optical_flow_probe
             tests/nvidia_optical_flow_probe.cpp)

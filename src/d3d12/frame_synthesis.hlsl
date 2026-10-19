@@ -193,6 +193,72 @@ float sample_previous_linear_depth(float2 pixel) {
     return result;
 }
 
+float2 map_pixel_to_depth_coord_clamped(float2 pixel) {
+    return float2(map_pixel_to_depth_coord(pixel));
+}
+
+// 9-tap morphological depth neighborhood (foreground dilation + discontinuity detection).
+struct DepthNeighborhoodSample {
+    float foreground_depth;
+    float background_depth;
+    float center_depth;
+    bool is_silhouette;
+};
+
+DepthNeighborhoodSample sample_current_depth_neighborhood(float2 pixel) {
+    DepthNeighborhoodSample result;
+    result.foreground_depth = 0.0;
+    result.background_depth = 0.0;
+    result.center_depth = 0.0;
+    result.is_silhouette = false;
+    if (has_current_depth_flag()) {
+        float center_z = sample_current_linear_depth(pixel);
+        result.center_depth = center_z;
+        result.foreground_depth = center_z;
+        result.background_depth = center_z;
+        static const float2 kOffsets[4] = {
+            float2(-1.0, 0.0), float2(1.0, 0.0),
+            float2(0.0, -1.0), float2(0.0, 1.0)
+        };
+        [unroll] for (uint i = 0u; i < 4u; ++i) {
+            float z_n = sample_current_linear_depth(pixel + kOffsets[i]);
+            if (z_n > 1.0e-4) {
+                result.foreground_depth = result.foreground_depth > 1.0e-4
+                    ? min(result.foreground_depth, z_n)
+                    : z_n;
+                result.background_depth = max(result.background_depth, z_n);
+            }
+        }
+        float gap = result.background_depth - result.foreground_depth;
+        result.is_silhouette =
+            result.foreground_depth > 1.0e-4 &&
+            (gap / max(result.foreground_depth, 0.02)) > 0.04;
+    }
+    return result;
+}
+
+float edge_feather_factor(float2 coordinate, float4 rect, float feather_px) {
+    float2 minimum = rect.xy - 0.5;
+    float2 maximum = rect.xy + rect.zw - 0.5;
+    bool inside =
+        coordinate.x >= minimum.x && coordinate.y >= minimum.y &&
+        coordinate.x <= maximum.x && coordinate.y <= maximum.y;
+    float dist = min(
+        min(coordinate.x - minimum.x, maximum.x - coordinate.x),
+        min(coordinate.y - minimum.y, maximum.y - coordinate.y));
+    return inside ? smoothstep(0.0, max(feather_px, 1.0), dist) : 0.0;
+}
+
+// Damps small spurious optical-flow vectors on static/low-contrast surfaces (HUD, fine grids).
+float static_motion_damping(float2 mv, float4 color_a, float4 color_b) {
+    float mag = length(mv);
+    float luma_a = dot(color_a.rgb, float3(0.2126, 0.7152, 0.0722));
+    float luma_b = dot(color_b.rgb, float3(0.2126, 0.7152, 0.0722));
+    float luma_diff = abs(luma_a - luma_b);
+    float mag_factor = smoothstep(0.35, 1.75, mag);
+    float luma_factor = smoothstep(0.004, 0.025, luma_diff);
+    return max(mag_factor, luma_factor);
+}
 float3 linear_to_srgb(float3 linear_color) {
     float3 low = linear_color * 12.92;
     float3 high = 1.055 * pow(max(linear_color, 0.0), 1.0 / 2.4) - 0.055;
@@ -509,8 +575,16 @@ CameraSample sample_current_target_with_asw(
     uint slice,
     uint view_index,
     float2 asw_cam_shift) {
+    float2 shifted = target_coordinate + asw_cam_shift;
+    if ((SynthesisFlags & (1u << 28)) != 0u) {
+        float4 rect = PreviousMappings[view_index].TargetRect;
+        shifted = clamp(
+            shifted,
+            rect.xy,
+            rect.xy + max(rect.zw - 1.0, float2(0.0, 0.0)));
+    }
     return sample_current_target(
-        target_coordinate + asw_cam_shift,
+        shifted,
         slice,
         view_index);
 }
@@ -867,7 +941,7 @@ bool fast_stationary_patch(float2 pixel, uint slice, float4 current) {
     return stationary;
 }
 
-// Cross-eye stereo-temporal synthesis (PureDark AFW afw_78b40.ll / Luke Ross AER):
+// Cross-eye stereo-temporal synthesis (alternate-eye stereo reconstruction):
 // Projects the target eye pixel into the freshly rendered opposite eye (other_slice)
 // using 6-DOF stereo baseline + depth in PreviousMappings[0], checks for stereo
 // occlusion against PreviousDepth (which binds the opposite eye's depth buffer),
@@ -974,9 +1048,11 @@ float4 synthesize_midpoint(
             pixel_linear_depth);
         float2 asw_cam_shift = float2(0.0, 0.0);
         if ((SynthesisFlags & (1u << 26)) != 0u) {
-            float asw_scale = (SynthesisFlags & (1u << 27)) != 0u
-                ? 1.0
-                : saturate((frac - 1.0) / max(frac, 1.0));
+            float asw_scale = (SynthesisFlags & (1u << 28)) != 0u
+                ? (-frac / max(1.0 - frac, 0.25))
+                : ((SynthesisFlags & (1u << 27)) != 0u
+                       ? 1.0
+                       : saturate((frac - 1.0) / max(frac, 1.0)));
             asw_cam_shift = (previous_coverage.coordinate - pixel) * asw_scale;
         }
         CameraSample current_fallback = sample_current_target_with_asw(
@@ -1030,7 +1106,7 @@ float4 synthesize_midpoint(
                             pixel - (1.0 - frac) * target_displacement;
                     }
 
-                    // Depth-ordered foreground horizon search (Meta ASW ovr_758d60 / PDAFW afw_81320):
+                    // Depth-ordered foreground horizon search:
                     // When hardware depth is bound, check whether a closer foreground surface in
                     // CurrentFrame crosses `pixel` at time `frac`, or whether `current_endpoint`
                     // was falsely pulled off a background pixel by an arriving foreground object.
@@ -1152,7 +1228,7 @@ float4 synthesize_midpoint(
                                 current_fallback.color,
                                 frac);
 
-                            // Depth-guided disocclusion resolution (PDAFWPlugin afw_78b40.ll):
+                            // Depth-guided disocclusion resolution:
                             // When previous_sample and current_sample disagree on a disoccluded
                             // background strip behind a moving foreground object, select the
                             // unoccluded background (larger linear depth Z) rather than blending

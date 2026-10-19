@@ -2963,7 +2963,7 @@ struct D3D12FrameSynthesizer::Impl {
             translation = make_target_to_source_translation(
                 previous_source.views[view_index],
                 target_views[view_index]);
-            if ((active_mode_flags & (1U << 24U)) != 0U &&
+            if ((active_mode_flags & ((1U << 24U) | (1U << 28U))) != 0U &&
                 !same_camera(
                     current_source.views[view_index],
                     target_views[view_index])) {
@@ -5492,6 +5492,48 @@ HRESULT D3D12FrameSynthesizer::submit_cross_eye_stereo(
             0.5F,
             std::nullopt,
             (1U << 25U) | 64U | 128U,
+            std::nullopt);
+    } catch (...) {
+        if (ticket != nullptr) {
+            *ticket = {};
+        }
+        return E_FAIL;
+    }
+}
+
+HRESULT D3D12FrameSynthesizer::submit_pose_centered_pair(
+    const D3D12HistoryCaptureTicket& current,
+    std::span<const D3D12ReprojectionView> current_source_views,
+    std::span<const D3D12ReprojectionView> midpoint_target_views,
+    std::uint32_t synthetic_destination_index,
+    std::uint32_t current_destination_index,
+    D3D12FrameSynthesisTicket* ticket,
+    std::optional<OverlayPlacement> debug_marker,
+    std::shared_ptr<const DlssMotionVectorSet> motion_vectors,
+    bool defer_current_copy,
+    float interpolation_fraction,
+    std::optional<D3D12ExtraSynthetic> extra_synthetic) noexcept {
+    try {
+        std::scoped_lock lock(mutex_);
+        if (impl_ == nullptr) {
+            if (ticket != nullptr) {
+                *ticket = {};
+            }
+            return E_UNEXPECTED;
+        }
+        return impl_->submit_pair(
+            current,
+            current_source_views,
+            midpoint_target_views,
+            synthetic_destination_index,
+            current_destination_index,
+            ticket,
+            debug_marker,
+            std::move(motion_vectors),
+            defer_current_copy,
+            interpolation_fraction,
+            extra_synthetic,
+            (1U << 28U) | 64U | 128U,
             std::nullopt);
     } catch (...) {
         if (ticket != nullptr) {

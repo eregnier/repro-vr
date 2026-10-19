@@ -11,6 +11,7 @@
 #include "xrfg/provider_api.hpp"
 #include <atomic>
 #include "xrfg/openxr_fps_overlay.hpp"
+#include "xrfg/reprojection_telemetry.hpp"
 #include "xrfg/steamvr_delivery.hpp"
 
 #include <windows.h>
@@ -2938,7 +2939,10 @@ create_d3d12_frame_generation_swapchains(
         // have one. The direct D3D11 path never met this, because synthesis
         // wrote to the interop's own single-mip textures; a native D3D12
         // game keeps what it asked for.
-        if (state->session->d3d11_bridge || state->session->vulkan_bridge) {
+        const auto vram_prof =
+            xrfg::ReprojectionTelemetryRegistry::instance().tuning_config().vram_profile;
+        if (state->session->d3d11_bridge || state->session->vulkan_bridge ||
+            vram_prof != xrfg::VramProfile::legacy_deep) {
             private_info.mipCount = 1;
         }
         XrResult refusal = XR_SUCCESS;
@@ -2991,6 +2995,9 @@ create_d3d12_frame_generation_swapchains(
         if (single_rings) {
             D3D12_RESOURCE_DESC staging_description =
                 current.d3d12_resources.front()->GetDesc();
+            if (vram_prof != xrfg::VramProfile::legacy_deep) {
+                staging_description.MipLevels = 1;
+            }
             staging_description.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
             D3D12_HEAP_PROPERTIES heap_properties{};
             heap_properties.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -5527,39 +5534,36 @@ XrResult layer_wait_frame_impl(
         // comes back.
         const XrTime ceiling = add_display_duration(anchor, virtual_period);
         XrTime virtual_time = anchor;
-        if (state->last_virtual_display_time != 0 &&
-            virtual_time <= state->last_virtual_display_time) {
-            virtual_time = add_display_duration(
-                state->last_virtual_display_time,
-                virtual_period);
-        }
-        if (virtual_time > ceiling) {
-            xrfg::bridge_flight_logger().event(
-                xrfg::BridgeFlightOperation::virtual_clock_clamp,
-                0,
-                static_cast<std::uint64_t>(virtual_time - ceiling),
-                static_cast<std::uint64_t>(ceiling),
-                static_cast<std::uint64_t>(
-                    state->presenter_frame_state.predictedDisplayTime));
-            virtual_time = ceiling;
-        }
-        // The ceiling can land at or below the time already served, because
-        // the anchor tracks a runtime prediction that does not advance by a
-        // whole period every time it is read. Never hand the application a
-        // display time that does not move: it is not something a caller has
-        // to tolerate, and the runtime safeguards added in v0.2.1 read a
-        // non-advancing time as a projection resource layout change and stop
-        // generation for a second, which the fail-open pacing that follows
-        // then reproduces on the next frame.
-        //
-        // A nanosecond is enough. The drift the ceiling exists to prevent
-        // accumulates in whole periods - it reached 637 s of lead in a
-        // captured session - so a floor measured in nanoseconds keeps the
-        // sequence strictly increasing without giving the ratchet anything
-        // to turn on.
-        if (state->last_virtual_display_time != 0 &&
-            virtual_time <= state->last_virtual_display_time) {
-            virtual_time = state->last_virtual_display_time + 1;
+        const auto input_pacing =
+            xrfg::ReprojectionTelemetryRegistry::instance().tuning_config().input_pacing;
+        if (input_pacing == xrfg::InputPacingMode::low_latency_clamp) {
+            virtual_time = static_cast<XrTime>(
+                xrfg::clamp_low_latency_virtual_display_time(
+                    static_cast<std::int64_t>(state->presenter_frame_state.predictedDisplayTime),
+                    static_cast<std::int64_t>(virtual_period),
+                    static_cast<std::int64_t>(state->last_virtual_display_time),
+                    input_pacing));
+        } else {
+            if (state->last_virtual_display_time != 0 &&
+                virtual_time <= state->last_virtual_display_time) {
+                virtual_time = add_display_duration(
+                    state->last_virtual_display_time,
+                    virtual_period);
+            }
+            if (virtual_time > ceiling) {
+                xrfg::bridge_flight_logger().event(
+                    xrfg::BridgeFlightOperation::virtual_clock_clamp,
+                    0,
+                    static_cast<std::uint64_t>(virtual_time - ceiling),
+                    static_cast<std::uint64_t>(ceiling),
+                    static_cast<std::uint64_t>(
+                        state->presenter_frame_state.predictedDisplayTime));
+                virtual_time = ceiling;
+            }
+            if (state->last_virtual_display_time != 0 &&
+                virtual_time <= state->last_virtual_display_time) {
+                virtual_time = state->last_virtual_display_time + 1;
+            }
         }
         state->last_virtual_display_time = virtual_time;
         frame_state->predictedDisplayTime = virtual_time;
@@ -10700,7 +10704,9 @@ struct ProjectionResourceDestination {
     const ProjectionSnapshot& current_snapshot,
     bool synthetic,
     std::span<const ProjectionResourceDestination> destinations,
-    GeneratedFrameEndInfo* output) {
+    GeneratedFrameEndInfo* output,
+    const ProjectionSnapshot* previous_snapshot = nullptr,
+    float interpolation_fraction = 0.5F) {
     if (source == nullptr || output == nullptr || destinations.empty() ||
         source->layerCount == 0 || source->layers == nullptr ||
         current_snapshot.layers.empty()) {
@@ -10712,6 +10718,8 @@ struct ProjectionResourceDestination {
         source->layers,
         source->layers + source->layerCount);
     output->projections.reserve(current_snapshot.layers.size());
+    const xrfg::Phase2TuningConfig tuning =
+        xrfg::ReprojectionTelemetryRegistry::instance().tuning_config();
 
     for (std::size_t projection_index = 0;
          projection_index < current_snapshot.layers.size();
@@ -10749,10 +10757,37 @@ struct ProjectionResourceDestination {
             }
             view.subImage.swapchain = destination->destination_swapchain;
             if (synthetic) {
-                // The V008 shader generates the synthetic image in B's camera
-                // reference. Its projection metadata must therefore remain
-                // B's render pose/FOV.
-                view.next = nullptr;
+                if (tuning.pose_centering != xrfg::PoseCenteringMode::target_b_legacy &&
+                    previous_snapshot != nullptr &&
+                    projection_index < previous_snapshot->layers.size() &&
+                    view_index < previous_snapshot->layers[projection_index].views.size()) {
+                    const auto& prev_xr =
+                        previous_snapshot->layers[projection_index].views[view_index];
+                    const xrfg::Pose prev_pose{
+                        {prev_xr.pose.orientation.x, prev_xr.pose.orientation.y,
+                         prev_xr.pose.orientation.z, prev_xr.pose.orientation.w},
+                        {prev_xr.pose.position.x, prev_xr.pose.position.y, prev_xr.pose.position.z},
+                    };
+                    const xrfg::Pose curr_pose{
+                        {view.pose.orientation.x, view.pose.orientation.y,
+                         view.pose.orientation.z, view.pose.orientation.w},
+                        {view.pose.position.x, view.pose.position.y, view.pose.position.z},
+                    };
+                    const float alpha = (tuning.pose_centering == xrfg::PoseCenteringMode::extrapolated_asw)
+                        ? 1.5F
+                        : std::clamp(interpolation_fraction, 0.0F, 1.0F);
+                    const xrfg::Pose synth_pose = xrfg::extrapolate_pose(prev_pose, curr_pose, alpha);
+                    view.pose.orientation.x = synth_pose.orientation.x;
+                    view.pose.orientation.y = synth_pose.orientation.y;
+                    view.pose.orientation.z = synth_pose.orientation.z;
+                    view.pose.orientation.w = synth_pose.orientation.w;
+                    view.pose.position.x = synth_pose.position.x;
+                    view.pose.position.y = synth_pose.position.y;
+                    view.pose.position.z = synth_pose.position.z;
+                }
+                if (!tuning.keep_synthetic_depth) {
+                    view.next = nullptr;
+                }
             }
         }
         output->projections.push_back(std::move(copy));
@@ -12983,7 +13018,9 @@ XrResult layer_end_frame_impl(
             true,
             std::span<const ProjectionResourceDestination>(
                 synthetic_destinations.data(), synthetic_destinations.size()),
-            &first_generated);
+            &first_generated,
+            &*previous_snapshot,
+            interpolation_fraction);
         const bool current_built = build_generated_frame_end_info(
             end_info,
             current_snapshot,
@@ -12997,7 +13034,9 @@ XrResult layer_end_frame_impl(
             true,
             std::span<const ProjectionResourceDestination>(
                 extra_destinations.data(), extra_destinations.size()),
-            &extra_generated);
+            &extra_generated,
+            &*previous_snapshot,
+            extra_interpolation_fraction.value_or(0.6667F));
         if (synthetic_built && current_built) {
             // The synthetic frame owns the deferred copies: they must reach
             // the queue after it has been handed to the runtime.
