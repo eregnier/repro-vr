@@ -221,7 +221,7 @@ void test_low_latency_input_clamp_and_vram_cure() {
             << "keep_synthetic_depth=1\n"
             << "edge_feather_px=14\n";
     }
-    const bool reloaded = reg.poll_hot_reload(temp_dir);
+    const bool reloaded = reg.poll_hot_reload(temp_dir, true);
     const xrfg::Phase2TuningConfig cfg = reg.tuning_config();
     require_true(
         reloaded &&
@@ -232,6 +232,10 @@ void test_low_latency_input_clamp_and_vram_cure() {
             std::abs(cfg.edge_feather_pixels - 14.0F) < 1.0e-3F,
         "Hot-reload from ofxr_bridge.ini must apply all Phase 2 tuning parameters");
     std::filesystem::remove_all(temp_dir);
+    static_cast<void>(reg.poll_hot_reload(temp_dir, true));
+    require_true(
+        reg.tuning_config().pose_centering == xrfg::PoseCenteringMode::target_b_legacy,
+        "Force reload on directory without ofxr_bridge.ini must reset to defaults");
     reg.reset();
 }
 

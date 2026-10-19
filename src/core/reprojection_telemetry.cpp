@@ -349,12 +349,13 @@ Phase2TuningConfig ReprojectionTelemetryRegistry::tuning_config() const noexcept
 }
 
 bool ReprojectionTelemetryRegistry::poll_hot_reload(
-    const std::filesystem::path& directory) noexcept {
+    const std::filesystem::path& directory,
+    bool force_reload) noexcept {
     try {
         const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
         const auto prev_ns = last_poll_steady_ns_.load(std::memory_order_relaxed);
-        if (prev_ns != 0 && (now_ns - prev_ns) < 250'000'000LL) {
+        if (!force_reload && prev_ns != 0 && (now_ns - prev_ns) < 250'000'000LL) {
             return false;
         }
         last_poll_steady_ns_.store(now_ns, std::memory_order_relaxed);
@@ -362,6 +363,10 @@ bool ReprojectionTelemetryRegistry::poll_hot_reload(
         const std::filesystem::path ini_path = directory / "ofxr_bridge.ini";
         std::error_code ec;
         if (!std::filesystem::exists(ini_path, ec) || ec) {
+            if (force_reload) {
+                last_file_write_ticks_.store(0, std::memory_order_relaxed);
+                set_tuning_config(Phase2TuningConfig{});
+            }
             return false;
         }
         const auto ftime = std::filesystem::last_write_time(ini_path, ec);
@@ -369,7 +374,8 @@ bool ReprojectionTelemetryRegistry::poll_hot_reload(
             return false;
         }
         const auto ticks = static_cast<std::int64_t>(ftime.time_since_epoch().count());
-        if (ticks == last_file_write_ticks_.load(std::memory_order_relaxed)) {
+        if (!force_reload &&
+            ticks == last_file_write_ticks_.load(std::memory_order_relaxed)) {
             return false;
         }
         last_file_write_ticks_.store(ticks, std::memory_order_relaxed);
@@ -379,7 +385,7 @@ bool ReprojectionTelemetryRegistry::poll_hot_reload(
             return false;
         }
 
-        Phase2TuningConfig updated = tuning_config();
+        Phase2TuningConfig updated{};
         std::string line;
         while (std::getline(file, line)) {
             const auto comment_pos = line.find_first_of(";#");

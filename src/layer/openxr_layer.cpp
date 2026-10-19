@@ -4866,6 +4866,9 @@ XrResult layer_create_session_impl(
         xrfg::implicit_layer::read_capture_at_end_frame(current_layer_directory());
     state->vulkan_support =
         xrfg::implicit_layer::read_vulkan_support(current_layer_directory());
+    static_cast<void>(
+        xrfg::ReprojectionTelemetryRegistry::instance().poll_hot_reload(
+            current_layer_directory(), true));
     state->pause_applied = state->manual_control.pause_requested();
     state->recorder_applied = xrfg::bridge_flight_logger().enabled();
     state->menu_enabled = initial_control.desired.enabled && !state->pause_applied;
@@ -5414,6 +5417,39 @@ template <typename Info>
     return info == nullptr || info->type == expected;
 }
 
+void poll_phase2_tuning_once_per_second() noexcept {
+    try {
+        const auto cfg =
+            xrfg::ReprojectionTelemetryRegistry::instance().tuning_config();
+        if (cfg.pose_centering == xrfg::PoseCenteringMode::target_b_legacy &&
+            cfg.vram_profile == xrfg::VramProfile::legacy_deep &&
+            cfg.input_pacing == xrfg::InputPacingMode::end_frame_legacy &&
+            !cfg.keep_synthetic_depth) {
+            return;
+        }
+        static std::atomic<std::int64_t> last_attempt_ns{0};
+        const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        std::int64_t expected = last_attempt_ns.load(std::memory_order_relaxed);
+        if (expected == 0) {
+            last_attempt_ns.compare_exchange_strong(
+                expected, now_ns, std::memory_order_relaxed);
+            return;
+        }
+        if (now_ns - expected < 1'000'000'000LL) {
+            return;
+        }
+        if (!last_attempt_ns.compare_exchange_strong(
+                expected, now_ns, std::memory_order_relaxed)) {
+            return;
+        }
+        static_cast<void>(
+            xrfg::ReprojectionTelemetryRegistry::instance().poll_hot_reload(
+                current_layer_directory(), false));
+    } catch (...) {
+    }
+}
+
 XrResult layer_wait_frame_impl(
     XrSession session,
     const XrFrameWaitInfo* wait_info,
@@ -5421,6 +5457,10 @@ XrResult layer_wait_frame_impl(
     const auto state = find_session(session);
     if (!state || state->dispatch->wait_frame == nullptr) {
         return XR_ERROR_HANDLE_INVALID;
+    }
+
+    if (!state->triple_switchable) {
+        poll_phase2_tuning_once_per_second();
     }
 
     std::unique_lock frame_call_lock(state->frame_call_mutex);
@@ -10774,8 +10814,8 @@ struct ProjectionResourceDestination {
                         {view.pose.position.x, view.pose.position.y, view.pose.position.z},
                     };
                     const float alpha = (tuning.pose_centering == xrfg::PoseCenteringMode::extrapolated_asw)
-                        ? 1.5F
-                        : std::clamp(interpolation_fraction, 0.0F, 1.0F);
+                        ? (1.0F + std::clamp(interpolation_fraction, 0.05F, 0.95F))
+                        : std::clamp(interpolation_fraction, 0.05F, 0.95F);
                     const xrfg::Pose synth_pose = xrfg::extrapolate_pose(prev_pose, curr_pose, alpha);
                     view.pose.orientation.x = synth_pose.orientation.x;
                     view.pose.orientation.y = synth_pose.orientation.y;
@@ -10784,6 +10824,23 @@ struct ProjectionResourceDestination {
                     view.pose.position.x = synth_pose.position.x;
                     view.pose.position.y = synth_pose.position.y;
                     view.pose.position.z = synth_pose.position.z;
+                    if (view_index == 0) {
+                        const float hfov = std::abs(view.fov.angleRight - view.fov.angleLeft);
+                        const xrfg::Pose scanout_pose =
+                            xrfg::extrapolate_pose(prev_pose, curr_pose, std::clamp(interpolation_fraction, 0.05F, 0.95F));
+                        const xrfg::KinematicFrameMetrics metrics =
+                            xrfg::evaluate_pair_kinematic_metrics(
+                                prev_pose,
+                                curr_pose,
+                                synth_pose,
+                                scanout_pose,
+                                hfov > 0.01F ? hfov : 1.745F,
+                                static_cast<std::uint32_t>(
+                                    std::max(1, view.subImage.imageRect.extent.width)),
+                                11.1F);
+                        xrfg::ReprojectionTelemetryRegistry::instance()
+                            .record_kinematic_sample(metrics);
+                    }
                 }
                 if (!tuning.keep_synthetic_depth) {
                     view.next = nullptr;
@@ -10974,6 +11031,7 @@ struct PreparedProjectionFrame {
     XrSwapchain application_swapchain,
     bool request_pair,
     std::span<const xrfg::D3D12ReprojectionView> current_source_views,
+    std::span<const xrfg::D3D12ReprojectionView> synthetic_target_views,
     float interpolation_fraction,
     // Where a second synthetic belongs, for a session that makes one.
     std::optional<float> extra_interpolation_fraction,
@@ -11168,19 +11226,44 @@ struct PreparedProjectionFrame {
                     generation->interop->prepare_synthesis();
             }
             if (!generation->interop || SUCCEEDED(submit_result)) {
+                const auto pose_centering =
+                    xrfg::ReprojectionTelemetryRegistry::instance()
+                        .tuning_config()
+                        .pose_centering;
+                const bool use_pose_centered =
+                    request_pair &&
+                    pose_centering != xrfg::PoseCenteringMode::target_b_legacy &&
+                    synthetic_target_views.size() == current_source_views.size();
+                const float effective_fraction =
+                    (pose_centering == xrfg::PoseCenteringMode::extrapolated_asw)
+                        ? (1.0F + std::clamp(interpolation_fraction, 0.05F, 0.95F))
+                        : interpolation_fraction;
                 submit_result = request_pair
-                                    ? generation->synthesizer->submit_pair(
-                                          *capture,
-                                          current_source_views,
-                                          current_source_views,
-                                          synthetic_destination_index,
-                                          current_destination_index,
-                                          &ticket,
-                                          debug_marker,
-                                          motion_vectors,
-                                          defer_current_copy,
-                                          interpolation_fraction,
-                                          extra_synthetic)
+                                    ? (use_pose_centered
+                                           ? generation->synthesizer->submit_pose_centered_pair(
+                                                 *capture,
+                                                 current_source_views,
+                                                 synthetic_target_views,
+                                                 synthetic_destination_index,
+                                                 current_destination_index,
+                                                 &ticket,
+                                                 debug_marker,
+                                                 motion_vectors,
+                                                 defer_current_copy,
+                                                 effective_fraction,
+                                                 extra_synthetic)
+                                           : generation->synthesizer->submit_pair(
+                                                 *capture,
+                                                 current_source_views,
+                                                 current_source_views,
+                                                 synthetic_destination_index,
+                                                 current_destination_index,
+                                                 &ticket,
+                                                 debug_marker,
+                                                 motion_vectors,
+                                                 defer_current_copy,
+                                                 interpolation_fraction,
+                                                 extra_synthetic))
                                     : generation->synthesizer->submit_prime(
                                           *capture,
                                           current_source_views,
@@ -11451,6 +11534,7 @@ struct PreparedProjectionFrame {
 }
 [[nodiscard]] PreparedProjectionFrame prepare_projection_frame(
     const ProjectionSnapshot& snapshot,
+    const std::optional<ProjectionSnapshot>& previous_snapshot,
     std::span<const ProjectionResourceMapping> mappings,
     bool request_pair,
     float interpolation_fraction,
@@ -11465,6 +11549,10 @@ struct PreparedProjectionFrame {
         const PreparedGenerationKind expected_kind = request_pair
             ? PreparedGenerationKind::pair
             : PreparedGenerationKind::prime;
+        const auto pose_centering =
+            xrfg::ReprojectionTelemetryRegistry::instance()
+                .tuning_config()
+                .pose_centering;
         bool all_expected_kind = true;
         bool all_anchor_current = true;
         output.resources.reserve(mappings.size());
@@ -11476,12 +11564,35 @@ struct PreparedProjectionFrame {
                 output.failed_swapchain = mapping.application_swapchain;
                 return output;
             }
+            std::vector<xrfg::D3D12ReprojectionView> synthetic_target_views =
+                *reprojection_views;
+            if (request_pair && previous_snapshot &&
+                pose_centering != xrfg::PoseCenteringMode::target_b_legacy) {
+                const auto previous_views =
+                    build_reprojection_views(*previous_snapshot, mapping);
+                if (previous_views &&
+                    previous_views->size() == reprojection_views->size()) {
+                    const float alpha =
+                        (pose_centering == xrfg::PoseCenteringMode::extrapolated_asw)
+                            ? (1.0F + std::clamp(interpolation_fraction, 0.05F, 0.95F))
+                            : std::clamp(interpolation_fraction, 0.05F, 0.95F);
+                    for (std::size_t v = 0; v < synthetic_target_views.size(); ++v) {
+                        synthetic_target_views[v].pose = xrfg::extrapolate_pose(
+                            (*previous_views)[v].pose,
+                            (*reprojection_views)[v].pose,
+                            alpha);
+                    }
+                }
+            }
             PreparedGeneration generation = prepare_frame_generation(
                 mapping.application_swapchain,
                 request_pair,
                 std::span<const xrfg::D3D12ReprojectionView>(
                     reprojection_views->data(),
                     reprojection_views->size()),
+                std::span<const xrfg::D3D12ReprojectionView>(
+                    synthetic_target_views.data(),
+                    synthetic_target_views.size()),
                 interpolation_fraction,
                 extra_interpolation_fraction,
                 release_at_handover);
@@ -12886,6 +12997,7 @@ XrResult layer_end_frame_impl(
             : std::nullopt;
     PreparedProjectionFrame prepared = prepare_projection_frame(
         current_snapshot,
+        previous_snapshot,
         std::span<const ProjectionResourceMapping>(
             resource_mappings.mappings.data(),
             resource_mappings.mappings.size()),

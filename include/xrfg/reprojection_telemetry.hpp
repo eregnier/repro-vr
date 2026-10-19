@@ -167,8 +167,11 @@ public:
     [[nodiscard]] Phase2TuningConfig tuning_config() const noexcept;
 
     // Hot-reloads Phase 2 tuning parameters from `ofxr_bridge.ini` in `directory`
-    // if at least 250 ms have elapsed and the file timestamp changed.
-    bool poll_hot_reload(const std::filesystem::path& directory) noexcept;
+    // if at least 250 ms have elapsed and the file timestamp changed (or immediately
+    // when `force_reload` is true).
+    bool poll_hot_reload(
+        const std::filesystem::path& directory,
+        bool force_reload = false) noexcept;
 
     // Formats a compact single-line diagnostic summary for logs / HUD overlay.
     [[nodiscard]] std::string format_diagnostic_summary() const;
