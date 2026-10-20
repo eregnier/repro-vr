@@ -30,7 +30,9 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdarg>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -284,6 +286,56 @@ template <typename Handle>
         return std::filesystem::path(path.data()).parent_path();
     } catch (...) {
         return {};
+    }
+}
+
+void reprovr_live_log(const char* fmt, ...) noexcept {
+    if (!xrfg::bridge_flight_logger().enabled()) {
+        return;
+    }
+    try {
+        static std::mutex log_mutex;
+        static HANDLE log_file = INVALID_HANDLE_VALUE;
+        std::scoped_lock lock(log_mutex);
+        if (log_file == INVALID_HANDLE_VALUE) {
+            const auto log_path = current_layer_directory() / L"reprovr_live.log";
+            log_file = CreateFileW(
+                log_path.c_str(),
+                FILE_APPEND_DATA,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                nullptr,
+                OPEN_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL,
+                nullptr);
+        }
+        if (log_file == INVALID_HANDLE_VALUE) {
+            return;
+        }
+        SYSTEMTIME st{};
+        GetLocalTime(&st);
+        char buf[1024]{};
+        const int prefix = std::snprintf(
+            buf,
+            sizeof(buf),
+            "%02u:%02u:%02u.%03u [%lu] ",
+            static_cast<unsigned>(st.wHour),
+            static_cast<unsigned>(st.wMinute),
+            static_cast<unsigned>(st.wSecond),
+            static_cast<unsigned>(st.wMilliseconds),
+            static_cast<unsigned long>(GetCurrentThreadId()));
+        if (prefix > 0 && prefix < static_cast<int>(sizeof(buf) - 4)) {
+            va_list args;
+            va_start(args, fmt);
+            const int body = std::vsnprintf(
+                buf + prefix, sizeof(buf) - static_cast<std::size_t>(prefix) - 2, fmt, args);
+            va_end(args);
+            const int total = prefix + (body > 0 ? body : 0);
+            const int clamped = std::min<int>(total, static_cast<int>(sizeof(buf) - 2));
+            buf[clamped] = '\n';
+            DWORD written = 0;
+            WriteFile(log_file, buf, static_cast<DWORD>(clamped + 1), &written, nullptr);
+        }
+    } catch (...) {
     }
 }
 
@@ -2939,10 +2991,7 @@ create_d3d12_frame_generation_swapchains(
         // have one. The direct D3D11 path never met this, because synthesis
         // wrote to the interop's own single-mip textures; a native D3D12
         // game keeps what it asked for.
-        const auto vram_prof =
-            xrfg::ReprojectionTelemetryRegistry::instance().tuning_config().vram_profile;
-        if (state->session->d3d11_bridge || state->session->vulkan_bridge ||
-            vram_prof != xrfg::VramProfile::legacy_deep) {
+        if (state->session->d3d11_bridge || state->session->vulkan_bridge) {
             private_info.mipCount = 1;
         }
         XrResult refusal = XR_SUCCESS;
@@ -2995,9 +3044,6 @@ create_d3d12_frame_generation_swapchains(
         if (single_rings) {
             D3D12_RESOURCE_DESC staging_description =
                 current.d3d12_resources.front()->GetDesc();
-            if (vram_prof != xrfg::VramProfile::legacy_deep) {
-                staging_description.MipLevels = 1;
-            }
             staging_description.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
             D3D12_HEAP_PROPERTIES heap_properties{};
             heap_properties.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -5257,6 +5303,17 @@ XrResult layer_create_session_impl(
             std::scoped_lock lock(g_state_mutex);
             g_sessions[created_session] = state;
         }
+        const auto tun = xrfg::ReprojectionTelemetryRegistry::instance().tuning_config();
+        reprovr_live_log(
+            "SESSION_CREATED binding=%d d3d11_bridge=%d vk_bridge=%d deep=%d single_rings=%d pose_centering=%u vram_prof=%u low_lat=%u",
+            static_cast<int>(state->graphics_binding),
+            state->d3d11_bridge ? 1 : 0,
+            state->vulkan_bridge ? 1 : 0,
+            state->deep_pipeline ? 1 : 0,
+            state->single_swapchain_rings ? 1 : 0,
+            static_cast<unsigned>(tun.pose_centering),
+            static_cast<unsigned>(tun.vram_profile),
+            static_cast<unsigned>(tun.input_pacing));
     } catch (const std::bad_alloc&) {
         dispatch->destroy_session(created_session);
         return XR_ERROR_OUT_OF_MEMORY;
@@ -10842,9 +10899,7 @@ struct ProjectionResourceDestination {
                             .record_kinematic_sample(metrics);
                     }
                 }
-                if (!tuning.keep_synthetic_depth) {
-                    view.next = nullptr;
-                }
+                view.next = nullptr;
             }
         }
         output->projections.push_back(std::move(copy));
@@ -11270,6 +11325,27 @@ struct PreparedProjectionFrame {
                                           current_destination_index,
                                           &ticket,
                                           motion_vectors);
+                static std::atomic<std::uint64_t> diag_count{0};
+                const std::uint64_t n = ++diag_count;
+                if (FAILED(submit_result) || n <= 16 || (n % 300 == 0)) {
+                    const HRESULT removed_hr =
+                        state->session->d3d12_device
+                            ? state->session->d3d12_device->GetDeviceRemovedReason()
+                            : S_OK;
+                    const auto kin =
+                        xrfg::ReprojectionTelemetryRegistry::instance()
+                            .latest_kinematic_metrics();
+                    reprovr_live_log(
+                        "SYNTH #%llu kind=%s pose_centered=%d frac=%.3f hr=0x%08lX removed=0x%08lX atw_err=%.3fdeg border=%.1fpx",
+                        static_cast<unsigned long long>(n),
+                        request_pair ? "PAIR" : "PRIME",
+                        use_pose_centered ? 1 : 0,
+                        static_cast<double>(effective_fraction),
+                        static_cast<unsigned long>(submit_result),
+                        static_cast<unsigned long>(removed_hr),
+                        static_cast<double>(kin.atw_pose_error_deg),
+                        static_cast<double>(kin.border_excursion_pixels));
+                }
             }
             if (SUCCEEDED(submit_result) && generation->interop) {
                 const auto publish_token = xrfg::bridge_flight_logger().begin(
