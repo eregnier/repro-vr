@@ -1,7 +1,7 @@
 # WIP — ReproVR (`C:\code\repro-vr`)
 
 > Document de reprise après compaction. Contient : objectif, état des branches Git, architecture Phase 2, rétro-ingénierie Quest 3 / SteamVR / Luke Ross (`RealVR64.dll` + `dxgi2.dll`), déploiement dans *Avatar: Frontiers of Pandora* (`D:\Games\AFOP`), diagnostics des 3 runs en jeu et prochaines étapes.
-> Dernière mise à jour : **2026-10-20** (`master` @ `e4f8b66`, `clean-room-mit` @ `8138f0b`).
+> Dernière mise à jour : **2026-10-20 13:40** (`master` @ `da9a27b`, `clean-room-mit` @ `8138f0b`).
 
 ---
 
@@ -82,6 +82,23 @@
 
 ---
 
+### 4.3 Run 4 (13:26) : BSOD `0x139` & revert du dé-wrapping
+
+* Le run avec `e4f8b66` (dé-wrapping `probe_fence->GetDevice`) a fini en **BSOD `KERNEL_SECURITY_CHECK_FAILURE 0x139` (param1=3) à ~13:29:44** (dump généré ; event `nvlddmkm 153` déjà vu à 12:52).
+* Logs : `reprovr_live.log` s'arrête à `SYNTH #2 kind=PRIME` (13:26:31), `RealVR64.log` à `session VISIBLE` : blocage dès la 2e frame synthétique, ~3 min avant le BSOD. Une `CreateCommandQueue` passait encore par le proxy ReShade (autre thread) : le dé-wrapping ne réglait rien.
+* `5232e19` n'avait pas crashé (juste lent, causes corrigées via l'ini). **Hypothèse** : mélange objets wrappés (ressources partagées D3D11/ReShade) et natifs (nos queues + NVOF `VIDEO_ENCODE`) sans synchronisation → corruption d'état GPU/driver. **Non confirmée** (analyser `C:\Windows\MEMORY.DMP`).
+* **Action** : commit `3834cae` revert le dé-wrapping dans `d3d11_d3d12_interop.cpp` / `vulkan_d3d12_interop.cpp` (le gating de `reprovr_live.log` est conservé).
+
+### 4.4 Boîte noire (`da9a27b`) : `src/layer/blackbox.hpp` + `tools/analyze_run.py`
+
+* `reprovr_phase.bin` (mmap 64 o, flush 250 ms par thread de fond) : dernière phase / frame / `HRESULT` survivant à un hang ou BSOD. Phases : `session_created, end_frame_begin, capture, synth_prime_submit, synth_pair_submit, synth_done, publish, runtime_end_frame, end_frame_end`.
+* `reprovr_blackbox.log` : en-tête (build, ini, exe, `run_id`) + ligne `STAT` par seconde (fps, `xrEndFrame` p50/p99/max, synth/s, erreurs, phase) + lignes `ERROR hr=...`. Le thread de rendu n'écrit jamais sur disque.
+* Actif seulement avec `repro_vr_installed.manifest`. Analyse : `uv run python tools/analyze_run.py D:\Games\AFOP` (verdict : dernière phase, hang, spikes, erreurs, perf).
+* **Manque** : timings GPU par étape (NVOF/composition) et VRAM, pas encore dans le log.
+* **Piège build** : la DLL à déployer est `build\XR_APILAYER_XRFrameBridge_diagnostic.dll` (pas `build\ofxr\`, copie de test).
+
+---
+
 ## 5. Fichiers Déployés dans `D:\Games\AFOP`
 
 * `D:\Games\AFOP\XR_APILAYER_XRFrameBridge_diagnostic.dll` (build `master` @ `e4f8b66`)
@@ -108,10 +125,7 @@ ctest -L needs_gpu_timing -j 1
 
 ## 7. Prochaine Étape Immédiate à la Reprise
 
-1. **Tester le nouveau build (`e4f8b66`) dans Avatar (`D:\Games\AFOP`)** :
-   * Vérifier dans `D:\Games\AFOP\RealVR64.log` que les `CreateCommandQueue (Type = 6)` de NVOF ne sont **plus** interceptées par `dxgi2.dll` (grâce au dé-wrapping `probe_fence->GetDevice`).
-   * Vérifier dans `D:\Games\AFOP\reprovr_live.log` (toujours généré sans overhead grâce à `repro_vr_installed.manifest`) que `SESSION_CREATED` et `SYNTH #1..16` puis `#300, #600...` tournent à pleine vitesse sans `FlushFileBuffers` ni `DXGI_ERROR_DEVICE_REMOVED`.
-2. **Validation visuelle en casque** :
-   * Confirmer la disparition des micro-saccades en tournant la tête (`pose_centering_mode=midpoint`), la stabilité des bords et la réactivité manette (`deep_pipeline=0`).
-3. **Si tout est validé sur `master`** :
-   * Porter le `probe_fence->GetDevice` et la passe finale D3D11 bridge (si souhaité) sur `clean-room-mit`.
+1. **Tester le build `da9a27b`** (revert dé-wrapping + boîte noire, déjà déployé dans `D:\Games\AFOP`), puis `uv run python tools/analyze_run.py`.
+2. **Si BSOD / hang** : lire la dernière phase (`reprovr_phase.bin`), analyser `MEMORY.DMP` (driver fautif), tester sans NVOF (`PRIME` seul).
+3. **Si stable** : validation visuelle en casque (micro-saccades, bords, réactivité manette), puis ajouter timings GPU/VRAM à la boîte noire.
+4. Portage éventuel sur `clean-room-mit` seulement après validation sur `master`.
