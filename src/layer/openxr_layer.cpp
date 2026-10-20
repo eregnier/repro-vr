@@ -51,6 +51,8 @@
 #include <variant>
 #include <vector>
 
+#include "blackbox.hpp"
+
 namespace xrfg {
 void set_optiscaler_embedded_delegation(bool active) noexcept;
 }
@@ -1777,6 +1779,7 @@ template <typename Call>
 [[nodiscard]] auto with_runtime_entry(SessionState* session, Call&& call)
     -> decltype(call()) {
     const RuntimeEntry gate(session);
+    xrfg::bb::set_phase(xrfg::bb::Phase::runtime_end_frame);
     return call();
 }
 
@@ -5316,6 +5319,11 @@ XrResult layer_create_session_impl(
             g_sessions[created_session] = state;
         }
         const auto tun = xrfg::ReprojectionTelemetryRegistry::instance().tuning_config();
+        {
+            char hdr[256];
+            std::snprintf(hdr, sizeof(hdr), "binding=%d d3d11_bridge=%d vk_bridge=%d deep=%d pose_centering=%u vram_prof=%u", static_cast<int>(state->graphics_binding), state->d3d11_bridge ? 1 : 0, state->vulkan_bridge ? 1 : 0, state->deep_pipeline ? 1 : 0, static_cast<unsigned>(tun.pose_centering), static_cast<unsigned>(tun.vram_profile));
+            xrfg::bb::start(current_layer_directory(), hdr);
+        }
         reprovr_live_log(
             "SESSION_CREATED binding=%d d3d11_bridge=%d vk_bridge=%d deep=%d single_rings=%d pose_centering=%u vram_prof=%u low_lat=%u",
             static_cast<int>(state->graphics_binding),
@@ -11305,6 +11313,7 @@ struct PreparedProjectionFrame {
                     (pose_centering == xrfg::PoseCenteringMode::extrapolated_asw)
                         ? (1.0F + std::clamp(interpolation_fraction, 0.05F, 0.95F))
                         : interpolation_fraction;
+                xrfg::bb::set_phase(request_pair ? xrfg::bb::Phase::synth_pair_submit : xrfg::bb::Phase::synth_prime_submit);
                 submit_result = request_pair
                                     ? (use_pose_centered
                                            ? generation->synthesizer->submit_pose_centered_pair(
@@ -11337,6 +11346,9 @@ struct PreparedProjectionFrame {
                                           current_destination_index,
                                           &ticket,
                                           motion_vectors);
+                xrfg::bb::note_hr(submit_result);
+                xrfg::bb::note_synth();
+                xrfg::bb::set_phase(xrfg::bb::Phase::synth_done);
                 static std::atomic<std::uint64_t> diag_count{0};
                 const std::uint64_t n = ++diag_count;
                 if (FAILED(submit_result) || n <= 16 || (n % 300 == 0)) {
@@ -11360,6 +11372,7 @@ struct PreparedProjectionFrame {
                 }
             }
             if (SUCCEEDED(submit_result) && generation->interop) {
+                xrfg::bb::set_phase(xrfg::bb::Phase::publish);
                 const auto publish_token = xrfg::bridge_flight_logger().begin(
                     xrfg::BridgeFlightOperation::d3d11_publish,
                     handle_value(application_swapchain),
@@ -12644,6 +12657,7 @@ XrResult layer_end_frame_impl(
     if (!state || state->dispatch->end_frame == nullptr) {
         return XR_ERROR_HANDLE_INVALID;
     }
+    xrfg::bb::EndFrameScope blackbox_scope;
     PrivateDepthStrip private_depth_strip;
     end_info = strip_private_depth(*state, end_info, private_depth_strip);
 
@@ -12660,6 +12674,7 @@ XrResult layer_end_frame_impl(
         // with them, and the history captures of the native D3D12 ones;
         // before anything below reads last_released_capture or the frame
         // goes down naming those images.
+        xrfg::bb::set_phase(xrfg::bb::Phase::capture);
         release_pending_bridge_images(state);
         capture_pending_end_frame_images(state);
         // Then mark the queue once more, behind those captures, so the join
