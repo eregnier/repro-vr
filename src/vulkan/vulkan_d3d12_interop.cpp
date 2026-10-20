@@ -389,6 +389,19 @@ HRESULT create_d3d12_device_for_vulkan(
         if (FAILED(result)) {
             return result;
         }
+        {
+            ComPtr<ID3D12Fence> probe_fence;
+            if (SUCCEEDED(device->CreateFence(
+                    0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(probe_fence.GetAddressOf()))) &&
+                probe_fence) {
+                ComPtr<ID3D12Device> native_device;
+                if (SUCCEEDED(probe_fence->GetDevice(
+                        IID_PPV_ARGS(native_device.GetAddressOf()))) &&
+                    native_device) {
+                    device = std::move(native_device);
+                }
+            }
+        }
         D3D12_COMMAND_QUEUE_DESC queue_description{};
         queue_description.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
         // As for a D3D11 session: every piece of synthesis runs here while the

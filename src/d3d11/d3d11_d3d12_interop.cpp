@@ -214,6 +214,23 @@ HRESULT create_d3d12_device_for_d3d11(
         if (FAILED(result)) {
             return result;
         }
+        // Unwrap third-party D3D12Device proxies (e.g. ReShade / Luke Ross dxgi2.dll)
+        // whose CreateFence tail-calls the native d3d12core device: querying GetDevice
+        // on the native fence yields the underlying unhooked ID3D12Device so internal
+        // synthesis/NVOF/runtime command queues never trigger proxy hook state machines.
+        {
+            ComPtr<ID3D12Fence> probe_fence;
+            if (SUCCEEDED(device->CreateFence(
+                    0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(probe_fence.GetAddressOf()))) &&
+                probe_fence) {
+                ComPtr<ID3D12Device> native_device;
+                if (SUCCEEDED(probe_fence->GetDevice(
+                        IID_PPV_ARGS(native_device.GetAddressOf()))) &&
+                    native_device) {
+                    device = std::move(native_device);
+                }
+            }
+        }
         D3D12_COMMAND_QUEUE_DESC queue_description{};
         queue_description.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
         // Every piece of a D3D11 session's synthesis runs on this queue, and

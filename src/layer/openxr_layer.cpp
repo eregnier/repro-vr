@@ -290,13 +290,25 @@ template <typename Handle>
 }
 
 void reprovr_live_log(const char* fmt, ...) noexcept {
-    if (!xrfg::bridge_flight_logger().enabled()) {
-        return;
-    }
     try {
         static std::mutex log_mutex;
+        static int enabled_state = 0; // 0 = unknown, 1 = enabled, -1 = disabled (unit test)
         static HANDLE log_file = INVALID_HANDLE_VALUE;
         std::scoped_lock lock(log_mutex);
+        if (enabled_state == 0) {
+            const auto dir = current_layer_directory();
+            std::error_code ec;
+            // Only write reprovr_live.log when deployed in a game directory with repro_vr_installed.manifest
+            if (!dir.empty() &&
+                std::filesystem::exists(dir / L"repro_vr_installed.manifest", ec)) {
+                enabled_state = 1;
+            } else {
+                enabled_state = -1;
+            }
+        }
+        if (enabled_state < 0) {
+            return;
+        }
         if (log_file == INVALID_HANDLE_VALUE) {
             const auto log_path = current_layer_directory() / L"reprovr_live.log";
             log_file = CreateFileW(

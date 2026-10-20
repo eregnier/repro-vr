@@ -416,6 +416,11 @@ void test_d3d12_gpu_pose_centered_synthesis_no_black_borders() {
     ComPtr<ID3D12Fence> rb_fence;
     require_true(SUCCEEDED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(rb_fence.GetAddressOf()))),
         "Failed to create readback fence");
+    ComPtr<ID3D12Device> unwrapped_device;
+    require_true(
+        SUCCEEDED(rb_fence->GetDevice(IID_PPV_ARGS(unwrapped_device.GetAddressOf()))) &&
+            unwrapped_device != nullptr,
+        "Native ID3D12Fence::GetDevice unwrap must return a valid underlying ID3D12Device");
     HANDLE rb_ev = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     require_true(SUCCEEDED(queue->Signal(rb_fence.Get(), 1)) &&
         SUCCEEDED(rb_fence->SetEventOnCompletion(1, rb_ev)),
