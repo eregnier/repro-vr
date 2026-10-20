@@ -61,6 +61,71 @@ std::string wide_to_utf8(const std::wstring& wide) {
     return result;
 }
 
+bool register_explicit_layer_manifest_in_hive(
+    HKEY root_hive,
+    const std::filesystem::path& manifest_path) noexcept {
+    try {
+        std::error_code ec;
+        const auto abs_manifest =
+            std::filesystem::absolute(manifest_path, ec).lexically_normal();
+        const auto temp_dir =
+            std::filesystem::temp_directory_path(ec).lexically_normal().wstring();
+        const std::wstring value_name = abs_manifest.wstring();
+        if (!temp_dir.empty() && value_name.size() >= temp_dir.size() &&
+            _wcsnicmp(value_name.data(), temp_dir.data(), temp_dir.size()) == 0) {
+            return true;
+        }
+        HKEY key = nullptr;
+        const LSTATUS create_status = RegCreateKeyExW(
+            root_hive,
+            L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Explicit",
+            0,
+            nullptr,
+            REG_OPTION_NON_VOLATILE,
+            KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY,
+            nullptr,
+            &key,
+            nullptr);
+        if (create_status != ERROR_SUCCESS || key == nullptr) {
+            return false;
+        }
+        constexpr DWORD enabled_value = 0;
+        const LSTATUS set_status = RegSetValueExW(
+            key,
+            value_name.c_str(),
+            0,
+            REG_DWORD,
+            reinterpret_cast<const BYTE*>(&enabled_value),
+            sizeof(enabled_value));
+        RegCloseKey(key);
+        return set_status == ERROR_SUCCESS;
+    } catch (...) {
+        return false;
+    }
+}
+
+void unregister_explicit_layer_manifest_in_hive(
+    HKEY root_hive,
+    const std::filesystem::path& manifest_path) noexcept {
+    try {
+        HKEY key = nullptr;
+        if (RegOpenKeyExW(
+                root_hive,
+                L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Explicit",
+                0,
+                KEY_SET_VALUE | KEY_WOW64_64KEY,
+                &key) != ERROR_SUCCESS ||
+            key == nullptr) {
+            return;
+        }
+        const std::wstring value_name =
+            std::filesystem::absolute(manifest_path).lexically_normal().wstring();
+        static_cast<void>(RegDeleteValueW(key, value_name.c_str()));
+        RegCloseKey(key);
+    } catch (...) {
+    }
+}
+
 }  // namespace
 
 bool write_openxr_layer_manifest_json(
@@ -90,7 +155,8 @@ bool write_openxr_layer_manifest_json(
             << "    \"library_path\": \"" << escaped_path << "\",\n"
             << "    \"api_version\": \"1.0\",\n"
             << "    \"implementation_version\": \"1\",\n"
-            << "    \"description\": \"ReproVR 6-DOF Depth & Optical Flow Frame Synthesis Layer\"\n"
+            << "    \"description\": \"ReproVR 6-DOF Depth & Optical Flow Frame Synthesis Layer\",\n"
+            << "    \"disable_environment\": \"XRFG_DISABLE_OFXR_BRIDGE\"\n"
             << "  }\n"
             << "}\n";
         out.flush();
@@ -119,7 +185,7 @@ ProxyBootstrapResult bootstrap_repro_vr_from_directory(
             if (std::filesystem::exists(candidate_dll, ec)) {
                 result.layer_dll_found = true;
                 result.layer_dll_path = std::filesystem::absolute(candidate_dll, ec);
-                result.manifest_path = dir / kManifestJsonName;
+                result.manifest_path = std::filesystem::absolute(dir / kManifestJsonName, ec);
                 break;
             }
         }
@@ -128,17 +194,21 @@ ProxyBootstrapResult bootstrap_repro_vr_from_directory(
             return result;
         }
 
-        if (!std::filesystem::exists(result.manifest_path, ec)) {
-            result.manifest_ready = write_openxr_layer_manifest_json(
-                result.manifest_path,
-                result.layer_dll_path);
-        } else {
-            result.manifest_ready = true;
-        }
-
+        // Always regenerate the JSON manifest so moved folders or corrupted escapes are healed.
+        result.manifest_ready = write_openxr_layer_manifest_json(
+            result.manifest_path,
+            result.layer_dll_path);
         if (!result.manifest_ready) {
             return result;
         }
+
+        // Register in Explicit ApiLayers (HKCU and HKLM when elevated) so High-Integrity
+        // processes (where Khronos loader ignores XR_API_LAYER_PATH) still resolve the layer
+        // when XR_ENABLE_API_LAYERS is set in-process.
+        static_cast<void>(register_explicit_layer_manifest_in_hive(
+            HKEY_CURRENT_USER, result.manifest_path));
+        static_cast<void>(register_explicit_layer_manifest_in_hive(
+            HKEY_LOCAL_MACHINE, result.manifest_path));
 
         const std::wstring manifest_dir =
             result.manifest_path.parent_path().wstring();
@@ -314,6 +384,11 @@ bool remove_dropin_from_game_directory(
         if (!std::filesystem::exists(marker_path, ec)) {
             return false;
         }
+
+        const auto manifest_abs =
+            std::filesystem::absolute(target_game_dir / kManifestJsonName, ec);
+        unregister_explicit_layer_manifest_in_hive(HKEY_CURRENT_USER, manifest_abs);
+        unregister_explicit_layer_manifest_in_hive(HKEY_LOCAL_MACHINE, manifest_abs);
 
         const std::array<const wchar_t*, 6> managed_files{
             L"version.dll",
