@@ -10893,7 +10893,7 @@ struct ProjectionResourceDestination {
                     const float alpha = (tuning.pose_centering == xrfg::PoseCenteringMode::extrapolated_asw)
                         ? (1.0F + std::clamp(interpolation_fraction, 0.05F, 0.95F))
                         : (tuning.pose_centering == xrfg::PoseCenteringMode::meta_asw_single_source)
-                            ? (1.0F + std::clamp(interpolation_fraction, 0.05F, 0.95F))
+                            ? 1.0F // Target B camera pose: pristine current frame pose, 0 overshooting
                             : std::clamp(interpolation_fraction, 0.05F, 0.95F);
                     const xrfg::Pose synth_pose = xrfg::extrapolate_pose(prev_pose, curr_pose, alpha);
                     view.pose.orientation.x = synth_pose.orientation.x;
@@ -11698,10 +11698,11 @@ struct PreparedProjectionFrame {
                 if (previous_views &&
                     previous_views->size() == reprojection_views->size()) {
                     const float alpha =
-                        (pose_centering == xrfg::PoseCenteringMode::extrapolated_asw ||
-                         pose_centering == xrfg::PoseCenteringMode::meta_asw_single_source)
+                        (pose_centering == xrfg::PoseCenteringMode::extrapolated_asw)
                             ? (1.0F + std::clamp(interpolation_fraction, 0.05F, 0.95F))
-                            : std::clamp(interpolation_fraction, 0.05F, 0.95F);
+                            : (pose_centering == xrfg::PoseCenteringMode::meta_asw_single_source)
+                                ? 1.0F // Target B camera pose: pristine current frame pose, 0 overshooting
+                                : std::clamp(interpolation_fraction, 0.05F, 0.95F);
                     for (std::size_t v = 0; v < synthetic_target_views.size(); ++v) {
                         synthetic_target_views[v].pose = xrfg::extrapolate_pose(
                             (*previous_views)[v].pose,
