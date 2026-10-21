@@ -1052,12 +1052,18 @@ float4 synthesize_midpoint(
             pixel_linear_depth);
         float2 asw_cam_shift = float2(0.0, 0.0);
         if ((SynthesisFlags & (1u << 26)) != 0u) {
-            float asw_scale = (SynthesisFlags & (1u << 28)) != 0u
-                ? (-frac / max(1.0 - frac, 0.25))
-                : ((SynthesisFlags & (1u << 27)) != 0u
-                       ? 1.0
-                       : saturate((frac - 1.0) / max(frac, 1.0)));
-            asw_cam_shift = (previous_coverage.coordinate - pixel) * asw_scale;
+            if (asw_single_source_flag()) {
+                // Meta Single-Source forward mode: the current frame is already the target.
+                // No artificial cam_shift needed because ATW reprojection aligns the pose.
+                asw_cam_shift = float2(0.0, 0.0);
+            } else {
+                float asw_scale = (SynthesisFlags & (1u << 28)) != 0u
+                    ? (-frac / max(1.0 - frac, 0.25))
+                    : ((SynthesisFlags & (1u << 27)) != 0u
+                           ? 1.0
+                           : saturate((frac - 1.0) / max(frac, 1.0)));
+                asw_cam_shift = (previous_coverage.coordinate - pixel) * asw_scale;
+            }
         }
         CameraSample current_fallback = sample_current_target_with_asw(
             pixel,
