@@ -241,7 +241,8 @@ public:
         std::shared_ptr<const DlssMotionVectorSet> motion_vectors = {},
         bool defer_current_copy = false,
         float interpolation_fraction = 0.5F,
-        std::optional<D3D12ExtraSynthetic> extra_synthetic = std::nullopt) noexcept;
+        std::optional<D3D12ExtraSynthetic> extra_synthetic = std::nullopt,
+        bool single_source_forward = false) noexcept;
 
     // Executes the current output's copy, which submit_pair records but
     // deliberately leaves unsubmitted. The synthetic frame is handed to the

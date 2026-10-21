@@ -98,6 +98,10 @@ bool enable_asw_median_flag() {
     return (SynthesisFlags & 128u) != 0u;
 }
 
+bool asw_single_source_flag() {
+    return (SynthesisFlags & (1u << 29)) != 0u;
+}
+
 bool asw_extrapolation_mode_flag() {
     return (SynthesisFlags & (1u << 24)) != 0u;
 }
@@ -1207,7 +1211,12 @@ float4 synthesize_midpoint(
 
                 if (endpoints_valid) {
                     if (previous_sample.valid >= 0.5 && current_sample.valid >= 0.5) {
-                        if (extrapolating) {
+                        if (asw_single_source_flag() && current_sample.valid >= 0.5) {
+                            // Meta SpaceWarp / Valve Motion Smoothing Single-Source Mode:
+                            // Projette UNIQUEMENT la frame la plus récente déformée par le flux optique / motion vectors.
+                            // Ne fait AUCUN crossfade avec la frame passée pour garantir 0 dédoublement / 0 ghosting sur le texte et les contrastes.
+                            output_color = saturate(current_sample.color);
+                        } else if (extrapolating) {
                             float disagreement_ext = rgb_error(previous_sample.color, current_sample.color);
                             float conf_ext = saturate(1.0 - disagreement_ext * 4.0);
                             output_color = saturate(lerp(

@@ -10892,7 +10892,9 @@ struct ProjectionResourceDestination {
                     };
                     const float alpha = (tuning.pose_centering == xrfg::PoseCenteringMode::extrapolated_asw)
                         ? (1.0F + std::clamp(interpolation_fraction, 0.05F, 0.95F))
-                        : std::clamp(interpolation_fraction, 0.05F, 0.95F);
+                        : (tuning.pose_centering == xrfg::PoseCenteringMode::meta_asw_single_source)
+                            ? (1.0F + std::clamp(interpolation_fraction, 0.05F, 0.95F))
+                            : std::clamp(interpolation_fraction, 0.05F, 0.95F);
                     const xrfg::Pose synth_pose = xrfg::extrapolate_pose(prev_pose, curr_pose, alpha);
                     view.pose.orientation.x = synth_pose.orientation.x;
                     view.pose.orientation.y = synth_pose.orientation.y;
@@ -11314,6 +11316,7 @@ struct PreparedProjectionFrame {
                         ? (1.0F + std::clamp(interpolation_fraction, 0.05F, 0.95F))
                         : interpolation_fraction;
                 xrfg::bb::set_phase(request_pair ? xrfg::bb::Phase::synth_pair_submit : xrfg::bb::Phase::synth_prime_submit);
+                const bool is_meta_single = (pose_centering == xrfg::PoseCenteringMode::meta_asw_single_source);
                 submit_result = request_pair
                                     ? (use_pose_centered
                                            ? generation->synthesizer->submit_pose_centered_pair(
@@ -11327,7 +11330,8 @@ struct PreparedProjectionFrame {
                                                  motion_vectors,
                                                  defer_current_copy,
                                                  effective_fraction,
-                                                 extra_synthetic)
+                                                 extra_synthetic,
+                                                 is_meta_single)
                                            : generation->synthesizer->submit_pair(
                                                  *capture,
                                                  current_source_views,
@@ -11694,7 +11698,8 @@ struct PreparedProjectionFrame {
                 if (previous_views &&
                     previous_views->size() == reprojection_views->size()) {
                     const float alpha =
-                        (pose_centering == xrfg::PoseCenteringMode::extrapolated_asw)
+                        (pose_centering == xrfg::PoseCenteringMode::extrapolated_asw ||
+                         pose_centering == xrfg::PoseCenteringMode::meta_asw_single_source)
                             ? (1.0F + std::clamp(interpolation_fraction, 0.05F, 0.95F))
                             : std::clamp(interpolation_fraction, 0.05F, 0.95F);
                     for (std::size_t v = 0; v < synthetic_target_views.size(); ++v) {

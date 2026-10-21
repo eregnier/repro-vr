@@ -21,6 +21,8 @@ enum class PoseCenteringMode : std::uint32_t {
     midpoint_slerp = 1,
     // Zero-latency extrapolation mode with flyaway clamp.
     extrapolated_asw = 2,
+    // Meta SpaceWarp single-source forward projection (0 crossfade ghosting)
+    meta_asw_single_source = 3,
 };
 
 enum class VramProfile : std::uint32_t {

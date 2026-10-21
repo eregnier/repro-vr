@@ -5512,7 +5512,8 @@ HRESULT D3D12FrameSynthesizer::submit_pose_centered_pair(
     std::shared_ptr<const DlssMotionVectorSet> motion_vectors,
     bool defer_current_copy,
     float interpolation_fraction,
-    std::optional<D3D12ExtraSynthetic> extra_synthetic) noexcept {
+    std::optional<D3D12ExtraSynthetic> extra_synthetic,
+    bool single_source_forward) noexcept {
     try {
         std::scoped_lock lock(mutex_);
         if (impl_ == nullptr) {
@@ -5533,7 +5534,7 @@ HRESULT D3D12FrameSynthesizer::submit_pose_centered_pair(
             defer_current_copy,
             interpolation_fraction,
             extra_synthetic,
-            (1U << 28U) | 64U | 128U,
+            (1U << 28U) | 64U | 128U | (single_source_forward ? (1U << 29U) : 0U),
             std::nullopt);
     } catch (...) {
         if (ticket != nullptr) {

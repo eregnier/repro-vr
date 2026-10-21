@@ -403,6 +403,8 @@ bool ReprojectionTelemetryRegistry::poll_hot_reload(
                     updated.pose_centering = PoseCenteringMode::target_b_legacy;
                 } else if (val == "extrapolated" || val == "asw" || val == "2") {
                     updated.pose_centering = PoseCenteringMode::extrapolated_asw;
+                } else if (val == "meta" || val == "single_source" || val == "meta_asw" || val == "3") {
+                    updated.pose_centering = PoseCenteringMode::meta_asw_single_source;
                 } else {
                     updated.pose_centering = PoseCenteringMode::midpoint_slerp;
                 }
