@@ -12658,6 +12658,7 @@ XrResult layer_end_frame_impl(
         return XR_ERROR_HANDLE_INVALID;
     }
     xrfg::bb::EndFrameScope blackbox_scope;
+    xrfg::bb::set_multiplier(state->frames_per_application_frame.load());
     PrivateDepthStrip private_depth_strip;
     end_info = strip_private_depth(*state, end_info, private_depth_strip);
 

@@ -56,7 +56,11 @@ struct PhaseRecord {            // 64 bytes, memory mapped
     volatile std::uint64_t synth_frames;
     volatile std::uint32_t errors;
     volatile std::uint32_t thread_id;
-    std::uint64_t pad[2];
+    volatile std::uint32_t hmd_hz_milli;
+    volatile std::uint16_t multiplier;
+    volatile std::uint16_t pad16;
+    volatile std::uint32_t last_wait_us;
+    volatile std::uint32_t last_synth_us;
 };
 static_assert(sizeof(PhaseRecord) == 64);
 
@@ -69,6 +73,10 @@ struct State {
     static constexpr std::size_t kRing = 512;
     std::array<std::atomic<std::uint32_t>, kRing> end_frame_us{};  // microseconds
     std::atomic<std::uint32_t> ring_pos{0};
+    std::atomic<std::uint32_t> hmd_hz_milli{0};
+    std::atomic<std::uint32_t> current_mult{2};
+    std::atomic<std::uint32_t> last_synth_us{0};
+    std::atomic<std::uint32_t> last_wait_us{0};
     std::atomic<bool> stop{false};
 };
 
@@ -127,6 +135,31 @@ inline void note_synth() noexcept {
     if (s.rec) s.rec->synth_frames = n;
 }
 
+inline void set_hmd_refresh(float hz) noexcept {
+    auto& s = st();
+    const auto m = static_cast<std::uint32_t>(hz * 1000.0f);
+    s.hmd_hz_milli.store(m, std::memory_order_relaxed);
+    if (s.rec) s.rec->hmd_hz_milli = m;
+}
+
+inline void set_multiplier(std::uint32_t mult) noexcept {
+    auto& s = st();
+    s.current_mult.store(mult, std::memory_order_relaxed);
+    if (s.rec) s.rec->multiplier = static_cast<std::uint16_t>(mult);
+}
+
+inline void note_synth_duration(std::uint32_t us) noexcept {
+    auto& s = st();
+    s.last_synth_us.store(us, std::memory_order_relaxed);
+    if (s.rec) s.rec->last_synth_us = us;
+}
+
+inline void note_wait_duration(std::uint32_t us) noexcept {
+    auto& s = st();
+    s.last_wait_us.store(us, std::memory_order_relaxed);
+    if (s.rec) s.rec->last_wait_us = us;
+}
+
 inline std::string read_ini_flat(const std::filesystem::path& dir) {
     std::string out;
     FILE* f = nullptr;
@@ -169,8 +202,16 @@ inline void writer_thread() noexcept {
             p99 = v[std::min(v.size() - 1, static_cast<std::size_t>(v.size() * 0.99))];
             mx = v.back();
         }
-        logf("STAT fps=%.1f synth/s=%.1f endframe_ms p50=%.2f p99=%.2f max=%.2f errs+=%llu phase=%s frame=%llu",
-             (f - last_frames) / dt, (y - last_synth) / dt, p50 / 1000.0, p99 / 1000.0, mx / 1000.0,
+        const float hmd_hz = static_cast<float>(s.hmd_hz_milli.load(std::memory_order_relaxed)) / 1000.0f;
+        const auto mult = s.current_mult.load(std::memory_order_relaxed);
+        const double app_fps = (f - last_frames) / dt;
+        const double synth_fps = (y - last_synth) / dt;
+        const double delivered_fps = app_fps + synth_fps;
+        logf("STAT hmd=%.1fHz app_fps=%.1f mult=%u delivered=%.1f synth/s=%.1f endframe_ms p50=%.2f p99=%.2f max=%.2f wait_ms=%.2f synth_ms=%.2f errs+=%llu phase=%s frame=%llu",
+             hmd_hz, app_fps, mult, delivered_fps, synth_fps,
+             p50 / 1000.0, p99 / 1000.0, mx / 1000.0,
+             s.last_wait_us.load(std::memory_order_relaxed) / 1000.0,
+             s.last_synth_us.load(std::memory_order_relaxed) / 1000.0,
              static_cast<unsigned long long>(e - last_errors),
              s.rec ? phase_name(s.rec->phase) : "?", static_cast<unsigned long long>(f));
         last_frames = f; last_synth = y; last_errors = e;
