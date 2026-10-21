@@ -1082,10 +1082,12 @@ float4 synthesize_midpoint(
                 current_fallback.valid >= 0.5 &&
                 fast_stationary_patch(pixel, slice_idx, current_fallback.color);
             if (preserve_stationary) {
-                output_color = saturate(lerp(
-                    previous_coverage_color,
-                    current_fallback.color,
-                    saturate(frac)));
+                output_color = asw_single_source_flag()
+                    ? saturate(current_fallback.color)
+                    : saturate(lerp(
+                        previous_coverage_color,
+                        current_fallback.color,
+                        saturate(frac)));
             } else {
                 float2 raw_backward = float2(0.0, 0.0);
                 CameraSample previous_sample = (CameraSample)0;
@@ -1215,14 +1217,26 @@ float4 synthesize_midpoint(
                         asw_cam_shift);
                 }
 
-                if (endpoints_valid) {
-                    if (previous_sample.valid >= 0.5 && current_sample.valid >= 0.5) {
-                        if (asw_single_source_flag() && current_sample.valid >= 0.5) {
-                            // Meta SpaceWarp / Valve Motion Smoothing Single-Source Mode:
-                            // Projette UNIQUEMENT la frame la plus récente déformée par le flux optique / motion vectors.
-                            // Ne fait AUCUN crossfade avec la frame passée pour garantir 0 dédoublement / 0 ghosting sur le texte et les contrastes.
+                if (asw_single_source_flag()) {
+                    // Meta SpaceWarp Single-Source Forward Mode:
+                    // Projette UNIQUEMENT la frame la plus recente deployee vers l'avant.
+                    // N'echantillonne JAMAIS PreviousFrame pour eviter tout ghosting ou effacement de texte.
+                    if (current_sample.valid >= 0.5) {
+                        float luma_fallback = dot(current_fallback.color.rgb, float3(0.2126, 0.7152, 0.0722));
+                        float luma_warp = dot(current_sample.color.rgb, float3(0.2126, 0.7152, 0.0722));
+                        // Anti-mangeur de texte / HUD : si le pixel de base est du texte blanc / clair (luma > 0.6)
+                        // et que le flux optique du fond l'a etire vers un fond sombre, preserver le texte net !
+                        if (luma_fallback > 0.60 && luma_warp < luma_fallback * 0.55) {
+                            output_color = saturate(current_fallback.color);
+                        } else {
                             output_color = saturate(current_sample.color);
-                        } else if (extrapolating) {
+                        }
+                    } else {
+                        output_color = saturate(current_fallback.color);
+                    }
+                } else if (endpoints_valid) {
+                    if (previous_sample.valid >= 0.5 && current_sample.valid >= 0.5) {
+                        if (extrapolating) {
                             float disagreement_ext = rgb_error(previous_sample.color, current_sample.color);
                             float conf_ext = saturate(1.0 - disagreement_ext * 4.0);
                             output_color = saturate(lerp(
