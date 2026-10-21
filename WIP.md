@@ -98,6 +98,20 @@
 * **Piège build** : la DLL à déployer est `build\XR_APILAYER_XRFrameBridge_diagnostic.dll` (pas `build\ofxr\`, copie de test).
 
 
+### 4.6 Preparation Run 6 : Cure des ghosts & vibrations (NVOF pur + Extrapolated ASW)
+
+* **Diagnostic Run 5** :
+  * App a atteint **45.0 FPS stables** (EndFrame p50 passe de 26.5 ms a 20.8 ms).
+  * *Ghosts / artefacts* : RealVR64.log a montre des erreurs CUDA repetees (cudaImportExternalMemory (1), cudaCreateSurfaceObject (400), DLSS eyes swapped). Le mode motion_vectors=dlss injectait donc des vecteurs corrompus/inverses dans le warp de ReproVR.
+  * *Vibrations / scintillement* : 
+vidia_input_scale=33 produisait une grille de vecteurs trop grossiere qui bavait sur les feuillages fins d Avatar. De plus, le mode midpoint en AFR souffrait du dephasage temporel entre l oeil frais et l oeil persistant.
+  * *Resolution* : Notee a ~2K par oeil sur Quest 3 (marge plus confortable qu a 4K Pimax, mais les gains architecturaux restent determinants).
+* **Ajustements Run 6 (ofxr_bridge.ini)** :
+  * motion_vectors=off : NVOF calcule ses propres vecteurs directement a partir des textures de rendu, sans dependre du CUDA defaillant de Luke Ross.
+  * 
+vidia_input_scale=50 : echelle d Optical Flow restauree a 50% pour un suivi geometrique precis sans scintillement.
+  * pose_centering_mode=extrapolated_asw : projection predictive de la pose vers le scanout futur (elimine le retard d interpolation et aligne les yeux sur la rotation du casque).
+
 ### 4.5 Preparation Run 5 (aee6ce1) : Cible 90 Hz 2X (Pimax / Quest 3 @ 90 Hz) + Observabilite fine
 
 * **Diagnostic Run 4** : 0 crash, 0 erreur GPU (errors=0, last_hr=0x00000000, 401s sans accroc). Le revert a definitivement tue le BSOD 0x139.
