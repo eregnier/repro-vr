@@ -97,11 +97,26 @@
 * **Manque** : timings GPU par étape (NVOF/composition) et VRAM, pas encore dans le log.
 * **Piège build** : la DLL à déployer est `build\XR_APILAYER_XRFrameBridge_diagnostic.dll` (pas `build\ofxr\`, copie de test).
 
+
+### 4.5 Preparation Run 5 (aee6ce1) : Cible 90 Hz 2X (Pimax / Quest 3 @ 90 Hz) + Observabilite fine
+
+* **Diagnostic Run 4** : 0 crash, 0 erreur GPU (errors=0, last_hr=0x00000000, 401s sans accroc). Le revert a definitivement tue le BSOD 0x139.
+  * *Stutter constate* : Quest 3 etait a 120 Hz, jeu a 36 FPS, mod en 2X force (72 FPS livres sur dalle 120 Hz -> judder permanent a 1.666 frames/scanout).
+  * *Latence manette* : xrEndFrame prenait 26.5 ms a lui seul (thread bloque), et l interpolation midpoint retient la frame reelle du joueur pour afficher la synthetique en premier (comportement type FrameGen).
+* **Ajustements Run 5** :
+  * Casque configure a **90 Hz** par l utilisateur pour simuler fidelement l environnement cible du Pimax a 90 Hz.
+  * Cible : **2X strict** (45 FPS jeu x 2 = 90 Hz livres).
+  * ofxr_bridge.ini allege pour liberer le GPU et le CPU : nvidia_preset=fast, nvidia_input_scale=33, triple_frame_gen=0.
+  * **Observabilite fine deployee** :
+    * Boite noire (blackbox.hpp) : decomposition synth_ms (duree GPU NVOF) vs wait_ms (duree bloque dans runtime), detection hmd_hz, multiplicateur mult.
+    * tools/analyze_run.py : calcul automatique du % de synchronisation avec la frequence HMD et diagnostic immediat de la source du stutter.
+  * Deploye dans D:\Games\AFOP\XR_APILAYER_XRFrameBridge_diagnostic.dll (1 049 088 octets). Logs nettoyes pour le nouveau run.
+
 ---
 
 ## 5. Fichiers Déployés dans `D:\Games\AFOP`
 
-* `D:\Games\AFOP\XR_APILAYER_XRFrameBridge_diagnostic.dll` (build `master` @ `e4f8b66`)
+* D:\Games\AFOP\XR_APILAYER_XRFrameBridge_diagnostic.dll (build master @ ee6ce1)
 * `D:\Games\AFOP\version.dll` (proxy bootstrap @ `760bcc5`)
 * `D:\Games\AFOP\XR_APILAYER_XRFrameBridge_diagnostic.json` (manifeste valide avec `disable_environment` + enregistré dans `HKCU/HKLM\...\ApiLayers\Explicit`)
 * `D:\Games\AFOP\ofxr_bridge.ini` (configuré avec `pose_centering_mode=midpoint`, `vram_profile=lean`, `deep_pipeline=0`, `low_latency_input=0`, `keep_synthetic_depth=0`, `logging_enabled=0`, `flush_each_event=0`)
