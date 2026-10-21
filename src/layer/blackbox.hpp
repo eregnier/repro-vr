@@ -64,11 +64,27 @@ struct PhaseRecord {            // 64 bytes, memory mapped
 };
 static_assert(sizeof(PhaseRecord) == 64);
 
+#pragma pack(push, 1)
+struct FrameFlightSample {
+    std::uint64_t frame;
+    std::uint32_t tick_ms;
+    float dt_ms;
+    float atw_err_deg;
+    float border_px;
+    float frac;
+    std::uint32_t synth_us;
+    std::uint32_t wait_us;
+    float q_real[4];
+    float q_synth[4];
+};
+#pragma pack(pop)
+
 struct State {
     std::atomic<int> enabled{0};            // 0 unknown, 1 on, -1 off
     PhaseRecord* rec{nullptr};
     HANDLE map{nullptr};
     HANDLE log{INVALID_HANDLE_VALUE};
+    HANDLE flight_file{INVALID_HANDLE_VALUE};
     std::atomic<std::uint64_t> frames{0}, synth{0}, errors{0};
     static constexpr std::size_t kRing = 512;
     std::array<std::atomic<std::uint32_t>, kRing> end_frame_us{};  // microseconds
@@ -77,6 +93,13 @@ struct State {
     std::atomic<std::uint32_t> current_mult{2};
     std::atomic<std::uint32_t> last_synth_us{0};
     std::atomic<std::uint32_t> last_wait_us{0};
+
+    static constexpr std::size_t kFlightSamples = 8192;
+    std::array<FrameFlightSample, kFlightSamples> flight_ring{};
+    std::atomic<std::uint32_t> flight_pos{0};
+    std::uint32_t flight_flushed{0};
+    std::wstring layer_dir;
+
     std::atomic<bool> stop{false};
 };
 
@@ -160,6 +183,32 @@ inline void note_wait_duration(std::uint32_t us) noexcept {
     if (s.rec) s.rec->last_wait_us = us;
 }
 
+inline void record_flight_sample(
+    std::uint64_t frame, float dt_ms, float atw_err, float border_px, float frac,
+    std::uint32_t synth_us, std::uint32_t wait_us,
+    const float q_real[4], const float q_synth[4]) noexcept {
+    auto& s = st();
+    if (s.enabled.load(std::memory_order_relaxed) <= 0) return;
+    const std::uint32_t idx = s.flight_pos.fetch_add(1, std::memory_order_relaxed) % State::kFlightSamples;
+    auto& sample = s.flight_ring[idx];
+    sample.frame = frame;
+    sample.tick_ms = static_cast<std::uint32_t>(GetTickCount64());
+    sample.dt_ms = dt_ms;
+    sample.atw_err_deg = atw_err;
+    sample.border_px = border_px;
+    sample.frac = frac;
+    sample.synth_us = synth_us;
+    sample.wait_us = wait_us;
+    if (q_real) {
+        sample.q_real[0] = q_real[0]; sample.q_real[1] = q_real[1];
+        sample.q_real[2] = q_real[2]; sample.q_real[3] = q_real[3];
+    }
+    if (q_synth) {
+        sample.q_synth[0] = q_synth[0]; sample.q_synth[1] = q_synth[1];
+        sample.q_synth[2] = q_synth[2]; sample.q_synth[3] = q_synth[3];
+    }
+}
+
 inline std::string read_ini_flat(const std::filesystem::path& dir) {
     std::string out;
     FILE* f = nullptr;
@@ -217,6 +266,25 @@ inline void writer_thread() noexcept {
         last_frames = f; last_synth = y; last_errors = e;
         for (auto& x : s.end_frame_us) x.store(0, std::memory_order_relaxed);  // per-second window
         if (s.log != INVALID_HANDLE_VALUE) FlushFileBuffers(s.log);  // background thread only
+
+        // Flush newly recorded flight samples to reprovr_flight.bin
+        const std::uint32_t cur_flight = s.flight_pos.load(std::memory_order_relaxed);
+        if (cur_flight > s.flight_flushed && !s.layer_dir.empty()) {
+            if (s.flight_file == INVALID_HANDLE_VALUE) {
+                const std::wstring p = s.layer_dir + L"\\reprovr_flight.bin";
+                s.flight_file = CreateFileW(p.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            }
+            if (s.flight_file != INVALID_HANDLE_VALUE) {
+                while (s.flight_flushed < cur_flight) {
+                    const std::uint32_t idx = s.flight_flushed % State::kFlightSamples;
+                    DWORD written = 0;
+                    WriteFile(s.flight_file, &s.flight_ring[idx], sizeof(FrameFlightSample), &written, nullptr);
+                    s.flight_flushed++;
+                }
+                FlushFileBuffers(s.flight_file);
+            }
+        }
     }
 }
 
@@ -251,6 +319,7 @@ inline void start(const std::filesystem::path& dir, const char* extra_header) no
     if (extra_header) logf("HEADER %s", extra_header);
     logf("INI %s", read_ini_flat(dir).c_str());
     s.enabled.store(1);
+    s.layer_dir = dir.wstring();
     set_phase(Phase::session_created);
     HANDLE t = CreateThread(nullptr, 0, [](LPVOID) -> DWORD { writer_thread(); return 0; }, nullptr, 0, nullptr);
     if (t) CloseHandle(t);

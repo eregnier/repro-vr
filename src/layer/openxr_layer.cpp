@@ -11351,14 +11351,34 @@ struct PreparedProjectionFrame {
                 xrfg::bb::set_phase(xrfg::bb::Phase::synth_done);
                 static std::atomic<std::uint64_t> diag_count{0};
                 const std::uint64_t n = ++diag_count;
+                const auto kin =
+                    xrfg::ReprojectionTelemetryRegistry::instance()
+                        .latest_kinematic_metrics();
+                float q_real[4]{0.0f, 0.0f, 0.0f, 1.0f};
+                float q_synth[4]{0.0f, 0.0f, 0.0f, 1.0f};
+                if (!current_source_views.empty()) {
+                    q_real[0] = current_source_views[0].pose.orientation.x;
+                    q_real[1] = current_source_views[0].pose.orientation.y;
+                    q_real[2] = current_source_views[0].pose.orientation.z;
+                    q_real[3] = current_source_views[0].pose.orientation.w;
+                }
+                if (!synthetic_target_views.empty()) {
+                    q_synth[0] = synthetic_target_views[0].pose.orientation.x;
+                    q_synth[1] = synthetic_target_views[0].pose.orientation.y;
+                    q_synth[2] = synthetic_target_views[0].pose.orientation.z;
+                    q_synth[3] = synthetic_target_views[0].pose.orientation.w;
+                }
+                xrfg::bb::record_flight_sample(
+                    n, kin.pipeline_latency_ms, kin.atw_pose_error_deg,
+                    kin.border_excursion_pixels, effective_fraction,
+                    xrfg::bb::st().last_synth_us.load(std::memory_order_relaxed),
+                    xrfg::bb::st().last_wait_us.load(std::memory_order_relaxed),
+                    q_real, q_synth);
                 if (FAILED(submit_result) || n <= 16 || (n % 300 == 0)) {
                     const HRESULT removed_hr =
                         state->session->d3d12_device
                             ? state->session->d3d12_device->GetDeviceRemovedReason()
                             : S_OK;
-                    const auto kin =
-                        xrfg::ReprojectionTelemetryRegistry::instance()
-                            .latest_kinematic_metrics();
                     reprovr_live_log(
                         "SYNTH #%llu kind=%s pose_centered=%d frac=%.3f hr=0x%08lX removed=0x%08lX atw_err=%.3fdeg border=%.1fpx",
                         static_cast<unsigned long long>(n),

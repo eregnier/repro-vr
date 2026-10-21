@@ -98,6 +98,23 @@
 * **Piège build** : la DLL à déployer est `build\XR_APILAYER_XRFrameBridge_diagnostic.dll` (pas `build\ofxr\`, copie de test).
 
 
+### 4.7 Preparation Run 7 : Flight Recorder Haute Precision & Retour a Midpoint Slerp
+
+* **Analyse de la precision utilisateur (texte 3D diegetique dans le decor)** :
+  * Le texte blanc n est pas un HUD 2D mais un element 3D incruste dans le monde lors du travelling d introduction d Avatar.
+  * Dans le Run 6, extrapolated_asw a force lpha = 1.0 + frac = 1.5, projetant la scene 15 ms dans le futur alors que le compositeur affichait la frame a mi-chemin (-0.5).
+  * L excursion de bordure constatee etait de **52.4 pixels** : le texte 3D en fort contraste subissait un saut brut de 52 pixels a chaque frame synthetique, creant le clignotement / deplacement bref percu.
+* **Ajustements Run 7** :
+  * pose_centering_mode=midpoint restaure dans ofxr_bridge.ini (garantit tw_err = 0.000 deg et order = 0.0px prouves).
+  * motion_vectors=off et 
+vidia_input_scale=50 maintenus (NVOF pur sans corruption CUDA de Luke Ross).
+  * **Flight Recorder Frame-par-Frame deploye** :
+    * Buffer circulaire de 8 192 echantillons cinematiques en RAM (quaternions de rotation, erreur ATW, excursion bordure, temps GPU NVOF, temps wait).
+    * Sauvegarde automatique dans 
+eprovr_flight.bin via le thread d arriere-plan.
+    * Outil d analyse NumPy dedie : 	ools/analyze_flight.py pour dissocier avec precision mathematique les microsaccades et vibrations.
+  * Binaire deploye : D:\Games\AFOP\XR_APILAYER_XRFrameBridge_diagnostic.dll (1 050 112 octets).
+
 ### 4.6 Preparation Run 6 : Cure des ghosts & vibrations (NVOF pur + Extrapolated ASW)
 
 * **Diagnostic Run 5** :
