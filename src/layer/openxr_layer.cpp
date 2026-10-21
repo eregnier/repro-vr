@@ -12149,12 +12149,9 @@ struct InternalCycleResult {
 // presenter a pass-through stopped, c the graphics binding.
 [[nodiscard]] bool frame_loop_takes_presenter(
     const std::shared_ptr<SessionState>& state) noexcept {
-    const bool split_forbidden = state->split_frame_loop &&
-        state->graphics_binding != SessionGraphicsBinding::d3d12 &&
-        !state->presenter_restore_after_bypass;
     if (!state->dispatch->virtual_desktop_runtime ||
         state->steamvr_presenter_start_requested ||
-        split_forbidden) {
+        (state->split_frame_loop && !state->presenter_restore_after_bypass)) {
         return false;
     }
     xrfg::bridge_flight_logger().event(
