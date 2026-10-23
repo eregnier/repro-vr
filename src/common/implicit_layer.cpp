@@ -414,6 +414,32 @@ bool read_capture_at_end_frame(
     }
 }
 
+std::string read_target_app_fps(
+    const std::filesystem::path& module_directory) noexcept {
+    try {
+        if (module_directory.empty()) {
+            return "auto";
+        }
+        const auto ini_path = resolve_config_ini_path(module_directory);
+        wchar_t buffer[64]{};
+        DWORD length = read_profile_string_compat(
+            L"target_app_fps", L"",
+            buffer, static_cast<DWORD>(std::size(buffer)), ini_path.c_str());
+        if (length == 0) {
+            length = read_profile_string_compat(
+                L"pace_application_fps", L"auto",
+                buffer, static_cast<DWORD>(std::size(buffer)), ini_path.c_str());
+        }
+        std::string result;
+        for (DWORD i = 0; i < length; ++i) {
+            result += static_cast<char>(tolower(buffer[i]));
+        }
+        return result.empty() ? "auto" : result;
+    } catch (...) {
+        return "auto";
+    }
+}
+
 std::vector<std::wstring> read_excluded_processes(
     const std::filesystem::path& module_directory) noexcept {
     std::vector<std::wstring> names;

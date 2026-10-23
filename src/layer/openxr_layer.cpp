@@ -1129,6 +1129,8 @@ struct SessionState {
     // each time, and where it settled would depend on what the player did.
     // The one change allowed is downward, while arming, before anything has
     // been generated: see fall_back_to_shallow_pipeline.
+    std::string target_app_fps_setting{"auto"};
+    std::chrono::steady_clock::time_point last_app_wait_released{};
     bool deep_pipeline{};
     // How many frames the runtime is handed for each application frame: two,
     // one synthetic and the real one, or three with "3X Frame Gen", where a
@@ -5236,6 +5238,8 @@ XrResult layer_create_session_impl(
         state->frames_per_application_frame = 3;
         state->deep_pipeline = false;
     }
+    state->target_app_fps_setting =
+        xrfg::implicit_layer::read_target_app_fps(current_layer_directory());
     state->two_slot_synthetic_ring =
         state->deep_pipeline || state->frames_per_application_frame > 2;
     state->triple_switchable =
@@ -5967,6 +5971,75 @@ XrResult layer_begin_frame_impl(
         state->application_wait_pending_begin = false;
         frame_call_lock.unlock();
         state->frame_call_condition.notify_all();
+    } else if (frame_call_lock.owns_lock()) {
+        frame_call_lock.unlock();
+    }
+
+    if (XR_SUCCEEDED(result)) {
+        // Enforce target application cadence lock (e.g. 30 FPS in 3X on 90 Hz, 45 FPS in 2X)
+        std::int64_t pacing_interval_ns = 0;
+        if (!state->target_app_fps_setting.empty() &&
+            state->target_app_fps_setting != "0" &&
+            state->target_app_fps_setting != "off" &&
+            state->target_app_fps_setting != "false" &&
+            state->target_app_fps_setting != "none") {
+
+            int explicit_fps = 0;
+            try {
+                explicit_fps = std::stoi(state->target_app_fps_setting);
+            } catch (...) {}
+
+            if (explicit_fps > 0) {
+                pacing_interval_ns = 1'000'000'000LL / explicit_fps;
+            } else {
+                // Auto mode: locks engine to HMD_Hz / multiplier
+                std::uint32_t mult = state->frames_per_application_frame.load();
+                if (mult < 2) mult = 2;
+                XrDuration hmd_display_period = state->presenter_display_period;
+                if (hmd_display_period <= 0) {
+                    hmd_display_period = state->minimum_runtime_display_period;
+                }
+                if (hmd_display_period <= 0 && state->presenter_frame_state.predictedDisplayPeriod > 0) {
+                    hmd_display_period = state->presenter_frame_state.predictedDisplayPeriod;
+                }
+                if (hmd_display_period <= 0) {
+                    hmd_display_period = 11'111'111; // 90 Hz default scanout (11.111 ms)
+                }
+                pacing_interval_ns = static_cast<std::int64_t>(hmd_display_period) * mult;
+            }
+        }
+
+        if (pacing_interval_ns > 0) {
+            const auto now = std::chrono::steady_clock::now();
+            if (state->last_app_wait_released != std::chrono::steady_clock::time_point{}) {
+                const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    now - state->last_app_wait_released);
+                if (elapsed.count() < pacing_interval_ns) {
+                    const auto remaining = std::chrono::nanoseconds(pacing_interval_ns) - elapsed;
+                    if (state->application_release_timer == nullptr) {
+                        state->application_release_timer = CreateWaitableTimerExW(
+                            nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+                        if (!state->application_release_timer) {
+                            state->application_release_timer = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
+                        }
+                    }
+                    if (state->application_release_timer != nullptr) {
+                        LARGE_INTEGER due{};
+                        due.QuadPart = -(remaining.count() / 100);
+                        if (SetWaitableTimer(state->application_release_timer, &due, 0, nullptr, nullptr, FALSE)) {
+                            static_cast<void>(WaitForSingleObject(state->application_release_timer, INFINITE));
+                        }
+                    }
+                }
+            }
+            const auto after_wait = std::chrono::steady_clock::now();
+            if (state->last_app_wait_released == std::chrono::steady_clock::time_point{} ||
+                after_wait - state->last_app_wait_released > std::chrono::nanoseconds(pacing_interval_ns * 2)) {
+                state->last_app_wait_released = after_wait;
+            } else {
+                state->last_app_wait_released += std::chrono::nanoseconds(pacing_interval_ns);
+            }
+        }
     }
     return result;
 }
@@ -8621,6 +8694,10 @@ void continuous_presenter_main(
             if (state->fps_overlay) {
                 state->fps_overlay->set_display_period(
                     state->presenter_display_period);
+            }
+            if (state->presenter_display_period > 0) {
+                const float hmd_hz = 1'000'000'000.0f / static_cast<float>(state->presenter_display_period);
+                xrfg::bb::set_hmd_refresh(hmd_hz);
             }
         }
         state->presenter_condition.notify_all();

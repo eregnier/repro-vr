@@ -155,6 +155,9 @@ struct ConfiguredNvidiaOptions {
 // Crystal's - for as long as the game is out of VR, on top of the game's
 // own. Written out explicitly empty, it excludes nothing.
 inline constexpr wchar_t kDefaultExcludedProcesses[] = L"PimaxHome-Win64-Shipping.exe";
+[[nodiscard]] std::string read_target_app_fps(
+    const std::filesystem::path& module_directory) noexcept;
+
 [[nodiscard]] std::vector<std::wstring> read_excluded_processes(
     const std::filesystem::path& module_directory) noexcept;
 
