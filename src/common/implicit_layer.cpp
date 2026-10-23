@@ -189,11 +189,76 @@ bool signal_arm_stop(const std::filesystem::path& manifest, std::wstring* error)
     }
 }
 
+std::filesystem::path resolve_config_ini_path(
+    const std::filesystem::path& module_directory) noexcept {
+    try {
+        if (module_directory.empty()) {
+            return {};
+        }
+        std::error_code ec;
+        const auto repro_ini = module_directory / L"repro_vr.ini";
+        if (std::filesystem::exists(repro_ini, ec) && !ec) {
+            return repro_ini;
+        }
+        const auto legacy_ini = module_directory / L"ofxr_bridge.ini";
+        if (std::filesystem::exists(legacy_ini, ec) && !ec) {
+            return legacy_ini;
+        }
+        return repro_ini;
+    } catch (...) {
+        return module_directory / L"repro_vr.ini";
+    }
+}
+
+namespace {
+
+DWORD read_profile_string_compat(
+    const wchar_t* key,
+    const wchar_t* default_val,
+    wchar_t* out_buffer,
+    DWORD out_size,
+    const std::filesystem::path& ini_path) noexcept {
+    static const wchar_t kSentinel[] = L"\x01__SENTINEL__";
+    DWORD count = GetPrivateProfileStringW(
+        L"repro_vr", key, kSentinel, out_buffer, out_size, ini_path.c_str());
+    if (count > 0 && wcscmp(out_buffer, kSentinel) != 0) {
+        return count;
+    }
+    count = GetPrivateProfileStringW(
+        L"reprovr", key, kSentinel, out_buffer, out_size, ini_path.c_str());
+    if (count > 0 && wcscmp(out_buffer, kSentinel) != 0) {
+        return count;
+    }
+    return GetPrivateProfileStringW(
+        L"ofxr", key, default_val, out_buffer, out_size, ini_path.c_str());
+}
+
+UINT read_profile_int_compat(
+    const wchar_t* key,
+    INT default_val,
+    const std::filesystem::path& ini_path) noexcept {
+    constexpr INT kSentinel = -987654321;
+    INT val = GetPrivateProfileIntW(
+        L"repro_vr", key, kSentinel, ini_path.c_str());
+    if (val != kSentinel) {
+        return static_cast<UINT>(val);
+    }
+    val = GetPrivateProfileIntW(
+        L"reprovr", key, kSentinel, ini_path.c_str());
+    if (val != kSentinel) {
+        return static_cast<UINT>(val);
+    }
+    return static_cast<UINT>(GetPrivateProfileIntW(
+        L"ofxr", key, default_val, ini_path.c_str()));
+}
+
+} // namespace
+
 ManualArmControl::ManualArmControl(const std::filesystem::path& module_directory) noexcept {
     try {
         std::array<wchar_t, 128> name{};
-        const auto ini = module_directory / L"ofxr_bridge.ini";
-        const DWORD count = GetPrivateProfileStringW(L"ofxr", L"control_event", L"",
+        const auto ini = resolve_config_ini_path(module_directory);
+        const DWORD count = read_profile_string_compat(L"control_event", L"",
             name.data(), static_cast<DWORD>(name.size()), ini.c_str());
         managed_ = count != 0;
         const std::wstring_view value(name.data(), count);
@@ -229,10 +294,9 @@ ConfiguredFlowBackend read_flow_backend(
         if (module_directory.empty()) {
             return ConfiguredFlowBackend::fidelity_fx;
         }
-        const auto ini_path = module_directory / L"ofxr_bridge.ini";
+        const auto ini_path = resolve_config_ini_path(module_directory);
         std::array<wchar_t, 32> value{};
-        const DWORD length = GetPrivateProfileStringW(
-            L"ofxr",
+        const DWORD length = read_profile_string_compat(
             L"backend",
             L"nvidia",
             value.data(),
@@ -260,11 +324,37 @@ bool read_deep_pipeline(
         if (module_directory.empty()) {
             return true;
         }
-        const auto ini_path = module_directory / L"ofxr_bridge.ini";
-        return GetPrivateProfileIntW(
-                   L"ofxr", L"deep_pipeline", 1, ini_path.c_str()) != 0;
+        const auto ini_path = resolve_config_ini_path(module_directory);
+        return read_profile_int_compat(
+                   L"deep_pipeline", 1, ini_path.c_str()) != 0;
     } catch (...) {
         return true;
+    }
+}
+
+StereoInputMode read_stereo_input_mode(
+    const std::filesystem::path& module_directory) noexcept {
+    try {
+        if (module_directory.empty()) {
+            return StereoInputMode::auto_detect;
+        }
+        const auto ini_path = resolve_config_ini_path(module_directory);
+        wchar_t buffer[64]{};
+        const DWORD length = read_profile_string_compat(
+            L"stereo_input_mode", L"auto",
+            buffer, static_cast<DWORD>(std::size(buffer)), ini_path.c_str());
+        std::wstring_view value(buffer, length);
+        if (_wcsicmp(value.data(), L"native") == 0) {
+            return StereoInputMode::native_stereo;
+        }
+        if (_wcsicmp(value.data(), L"aer") == 0 ||
+            _wcsicmp(value.data(), L"alternate") == 0 ||
+            _wcsicmp(value.data(), L"afr") == 0) {
+            return StereoInputMode::alternate_eye_rendering;
+        }
+        return StereoInputMode::auto_detect;
+    } catch (...) {
+        return StereoInputMode::auto_detect;
     }
 }
 
@@ -274,9 +364,9 @@ bool read_triple_frame_gen(
         if (module_directory.empty()) {
             return false;
         }
-        const auto ini_path = module_directory / L"ofxr_bridge.ini";
-        return GetPrivateProfileIntW(
-                   L"ofxr", L"triple_frame_gen", 0, ini_path.c_str()) != 0;
+        const auto ini_path = resolve_config_ini_path(module_directory);
+        return read_profile_int_compat(
+                   L"triple_frame_gen", 0, ini_path.c_str()) != 0;
     } catch (...) {
         return false;
     }
@@ -288,9 +378,9 @@ bool read_vulkan_session_bridge(
         if (module_directory.empty()) {
             return true;
         }
-        const auto ini_path = module_directory / L"ofxr_bridge.ini";
-        return GetPrivateProfileIntW(
-                   L"ofxr", L"vulkan_session_bridge", 1, ini_path.c_str()) != 0;
+        const auto ini_path = resolve_config_ini_path(module_directory);
+        return read_profile_int_compat(
+                   L"vulkan_session_bridge", 1, ini_path.c_str()) != 0;
     } catch (...) {
         return true;
     }
@@ -302,9 +392,9 @@ bool read_single_swapchain_rings(
         if (module_directory.empty()) {
             return true;
         }
-        const auto ini_path = module_directory / L"ofxr_bridge.ini";
-        return GetPrivateProfileIntW(
-                   L"ofxr", L"single_swapchain_rings", 1, ini_path.c_str()) != 0;
+        const auto ini_path = resolve_config_ini_path(module_directory);
+        return read_profile_int_compat(
+                   L"single_swapchain_rings", 1, ini_path.c_str()) != 0;
     } catch (...) {
         return true;
     }
@@ -316,9 +406,9 @@ bool read_capture_at_end_frame(
         if (module_directory.empty()) {
             return true;
         }
-        const auto ini_path = module_directory / L"ofxr_bridge.ini";
-        return GetPrivateProfileIntW(
-                   L"ofxr", L"capture_at_end_frame", 1, ini_path.c_str()) != 0;
+        const auto ini_path = resolve_config_ini_path(module_directory);
+        return read_profile_int_compat(
+                   L"capture_at_end_frame", 1, ini_path.c_str()) != 0;
     } catch (...) {
         return true;
     }
@@ -330,11 +420,11 @@ std::vector<std::wstring> read_excluded_processes(
     try {
         std::wstring value = kDefaultExcludedProcesses;
         if (!module_directory.empty()) {
-            const auto ini_path = module_directory / L"ofxr_bridge.ini";
+            const auto ini_path = resolve_config_ini_path(module_directory);
             // A sentinel default tells an absent key from an empty one.
             std::array<wchar_t, 2048> buffer{};
-            const DWORD count = GetPrivateProfileStringW(
-                L"ofxr", L"excluded_processes", L"\x01",
+            const DWORD count = read_profile_string_compat(
+                L"excluded_processes", L"\x01",
                 buffer.data(), static_cast<DWORD>(buffer.size()), ini_path.c_str());
             const std::wstring_view read(buffer.data(), count);
             if (read != L"\x01") {
@@ -436,9 +526,9 @@ bool read_d3d11_bridge(
         if (module_directory.empty()) {
             return false;
         }
-        const auto ini_path = module_directory / L"ofxr_bridge.ini";
-        return GetPrivateProfileIntW(
-                   L"ofxr", L"d3d11_bridge", 1, ini_path.c_str()) == 1;
+        const auto ini_path = resolve_config_ini_path(module_directory);
+        return read_profile_int_compat(
+                   L"d3d11_bridge", 1, ini_path.c_str()) == 1;
     } catch (...) {
         return false;
     }
@@ -450,9 +540,9 @@ bool read_vulkan_support(
         if (module_directory.empty()) {
             return false;
         }
-        const auto ini_path = module_directory / L"ofxr_bridge.ini";
-        return GetPrivateProfileIntW(
-                   L"ofxr", L"vulkan_bridge", 1, ini_path.c_str()) != 0;
+        const auto ini_path = resolve_config_ini_path(module_directory);
+        return read_profile_int_compat(
+                   L"vulkan_bridge", 1, ini_path.c_str()) != 0;
     } catch (...) {
         return false;
     }
@@ -465,10 +555,9 @@ ConfiguredNvidiaOptions read_nvidia_options(
         if (module_directory.empty()) {
             return options;
         }
-        const auto ini_path = module_directory / L"ofxr_bridge.ini";
+        const auto ini_path = resolve_config_ini_path(module_directory);
         std::array<wchar_t, 32> value{};
-        const DWORD length = GetPrivateProfileStringW(
-            L"ofxr",
+        const DWORD length = read_profile_string_compat(
             L"nvidia_preset",
             L"medium",
             value.data(),
@@ -481,8 +570,7 @@ ConfiguredNvidiaOptions read_nvidia_options(
                 options.preset = ConfiguredNvidiaPerformancePreset::fast;
             }
         }
-        const UINT input_scale = GetPrivateProfileIntW(
-            L"ofxr",
+        const UINT input_scale = read_profile_int_compat(
             L"nvidia_input_scale",
             50,
             ini_path.c_str());
@@ -491,8 +579,7 @@ ConfiguredNvidiaOptions read_nvidia_options(
             : input_scale == 50
                 ? ConfiguredNvidiaInputScale::half
                 : ConfiguredNvidiaInputScale::full;
-        options.bidirectional = GetPrivateProfileIntW(
-            L"ofxr",
+        options.bidirectional = read_profile_int_compat(
             L"nvidia_bidirectional",
             0,
             ini_path.c_str()) != 0;

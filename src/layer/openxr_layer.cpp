@@ -5313,7 +5313,7 @@ XrResult layer_create_session_impl(
             // The overlay draws into swapchain images of its own, so it
             // draws on the queue the runtime orders those images against.
             state->d3d12_device.Get(), runtime_queue(*state),
-            state->d3d11_device.Get(), current_layer_directory() / L"ofxr_bridge.ini",
+            state->d3d11_device.Get(), xrfg::implicit_layer::resolve_config_ini_path(current_layer_directory()),
             state->steamvr_delivery.get());
     } catch (...) {}
     if (state->graphics_binding == SessionGraphicsBinding::d3d11 &&

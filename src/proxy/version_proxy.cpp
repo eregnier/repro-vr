@@ -12,7 +12,8 @@ namespace {
 
 constexpr const wchar_t* kLayerDllName = L"XR_APILAYER_XRFrameBridge_diagnostic.dll";
 constexpr const wchar_t* kVulkanLayerDllName = L"OFXR_vulkan_queue_layer.dll";
-constexpr const wchar_t* kConfigIniName = L"ofxr_bridge.ini";
+constexpr const wchar_t* kConfigIniName = L"repro_vr.ini";
+constexpr const wchar_t* kLegacyConfigIniName = L"ofxr_bridge.ini";
 constexpr const wchar_t* kManifestJsonName = L"XR_APILAYER_XRFrameBridge_diagnostic.json";
 constexpr const wchar_t* kInstallMarkerName = L"repro_vr_installed.manifest";
 constexpr const wchar_t* kLayerName = L"XR_APILAYER_XRFrameBridge_diagnostic";
@@ -289,6 +290,10 @@ GameDropInInstallResult install_dropin_to_game_directory(
             if (std::filesystem::exists(direct, ec)) {
                 return direct;
             }
+            const auto sub_repro = source_bundle_dir / L"repro_vr" / filename;
+            if (std::filesystem::exists(sub_repro, ec)) {
+                return sub_repro;
+            }
             const auto sub = source_bundle_dir / L"ofxr" / filename;
             if (std::filesystem::exists(sub, ec)) {
                 return sub;
@@ -342,7 +347,10 @@ GameDropInInstallResult install_dropin_to_game_directory(
                 ec);
         }
 
-        const auto src_ini = find_source(kConfigIniName);
+        auto src_ini = find_source(kConfigIniName);
+        if (src_ini.empty()) {
+            src_ini = find_source(kLegacyConfigIniName);
+        }
         if (!src_ini.empty()) {
             std::filesystem::copy_file(
                 src_ini,
@@ -390,11 +398,12 @@ bool remove_dropin_from_game_directory(
         unregister_explicit_layer_manifest_in_hive(HKEY_CURRENT_USER, manifest_abs);
         unregister_explicit_layer_manifest_in_hive(HKEY_LOCAL_MACHINE, manifest_abs);
 
-        const std::array<const wchar_t*, 6> managed_files{
+        const std::array<const wchar_t*, 7> managed_files{
             L"version.dll",
             kLayerDllName,
             kVulkanLayerDllName,
             kConfigIniName,
+            kLegacyConfigIniName,
             kManifestJsonName,
             kInstallMarkerName,
         };

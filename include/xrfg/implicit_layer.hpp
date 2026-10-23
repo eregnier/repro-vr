@@ -62,6 +62,20 @@ enum class RegistryScope {
 [[nodiscard]] RegistryScope preferred_registry_scope() noexcept;
 [[nodiscard]] std::wstring_view registry_scope_name(RegistryScope scope) noexcept;
 
+enum class StereoInputMode {
+    auto_detect,
+    native_stereo,
+    alternate_eye_rendering,
+};
+
+// Resolves the configuration INI path for the given directory:
+// checks for `repro_vr.ini` first, fallback to `ofxr_bridge.ini`.
+[[nodiscard]] std::filesystem::path resolve_config_ini_path(
+    const std::filesystem::path& module_directory) noexcept;
+
+[[nodiscard]] StereoInputMode read_stereo_input_mode(
+    const std::filesystem::path& module_directory) noexcept;
+
 enum class ConfiguredFlowBackend {
     fidelity_fx,
     nvidia,

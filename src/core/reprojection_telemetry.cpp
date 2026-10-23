@@ -360,8 +360,11 @@ bool ReprojectionTelemetryRegistry::poll_hot_reload(
         }
         last_poll_steady_ns_.store(now_ns, std::memory_order_relaxed);
 
-        const std::filesystem::path ini_path = directory / "ofxr_bridge.ini";
         std::error_code ec;
+        std::filesystem::path ini_path = directory / "repro_vr.ini";
+        if (!std::filesystem::exists(ini_path, ec) || ec) {
+            ini_path = directory / "ofxr_bridge.ini";
+        }
         if (!std::filesystem::exists(ini_path, ec) || ec) {
             if (force_reload) {
                 last_file_write_ticks_.store(0, std::memory_order_relaxed);
