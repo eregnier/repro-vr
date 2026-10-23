@@ -50,6 +50,7 @@ struct OpenXrFpsOverlay::Impl {
     FpsCounter counter;
     FpsOverlayPosition position{FpsOverlayPosition::upper_right};
     std::int64_t next_refresh{};
+    FILETIME last_ini_write_time{};
     bool attempted{}, initialized{}, image_valid{}, acquired{}, waited{}, disabled{};
     bool paused{};
     std::atomic<std::int64_t> display_period_ns{0};
@@ -281,12 +282,25 @@ struct OpenXrFpsOverlay::Impl {
         if (!info || info->type != XR_TYPE_FRAME_END_INFO) return;
         if (now < next_refresh) return;
         next_refresh = now + 250'000'000;
-        std::array<wchar_t, 32> setting{};
-        GetPrivateProfileStringW(L"overlay", L"position", L"upper_right",
-            setting.data(), static_cast<DWORD>(setting.size()), ini.c_str());
-        std::string value;
-        for (wchar_t c : setting) { if (!c) break; value += c < 128 ? static_cast<char>(c) : '?'; }
-        position = parse_overlay_position(value);
+        WIN32_FILE_ATTRIBUTE_DATA file_data{};
+        if (GetFileAttributesExW(ini.c_str(), GetFileExInfoStandard, &file_data)) {
+            if (CompareFileTime(&file_data.ftLastWriteTime, &last_ini_write_time) != 0) {
+                last_ini_write_time = file_data.ftLastWriteTime;
+                std::array<wchar_t, 32> setting{};
+                GetPrivateProfileStringW(L"overlay", L"position", L"upper_right",
+                    setting.data(), static_cast<DWORD>(setting.size()), ini.c_str());
+                std::string value;
+                for (wchar_t c : setting) { if (!c) break; value += c < 128 ? static_cast<char>(c) : '?'; }
+                position = parse_overlay_position(value);
+            }
+        } else {
+            std::array<wchar_t, 32> setting{};
+            GetPrivateProfileStringW(L"overlay", L"position", L"upper_right",
+                setting.data(), static_cast<DWORD>(setting.size()), ini.c_str());
+            std::string value;
+            for (wchar_t c : setting) { if (!c) break; value += c < 128 ? static_cast<char>(c) : '?'; }
+            position = parse_overlay_position(value);
+        }
         if (position == FpsOverlayPosition::off || disabled || !info->layerCount || !info->layers) return;
         float left = -1, right = 1, down = -1, up = 1;
         std::uint32_t eye_width = 0;

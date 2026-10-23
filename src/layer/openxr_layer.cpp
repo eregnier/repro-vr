@@ -291,38 +291,114 @@ template <typename Handle>
     }
 }
 
-void reprovr_live_log(const char* fmt, ...) noexcept {
-    try {
-        static std::mutex log_mutex;
-        static int enabled_state = 0; // 0 = unknown, 1 = enabled, -1 = disabled (unit test)
-        static HANDLE log_file = INVALID_HANDLE_VALUE;
-        std::scoped_lock lock(log_mutex);
-        if (enabled_state == 0) {
+namespace {
+struct AsyncLiveLogger {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::vector<std::string> queue;
+    std::thread worker;
+    std::atomic<bool> active{false};
+    std::atomic<bool> stopping{false};
+    bool initialized{false};
+    HANDLE log_file{INVALID_HANDLE_VALUE};
+
+    void init_if_needed() noexcept {
+        if (initialized) return;
+        initialized = true;
+        try {
             const auto dir = current_layer_directory();
+            const auto ini_path = dir / L"ofxr_bridge.ini";
+            const auto repro_ini_path = dir / L"repro_vr.ini";
+            int wanted = 0;
             std::error_code ec;
-            // Only write reprovr_live.log when deployed in a game directory with repro_vr_installed.manifest
-            if (!dir.empty() &&
-                std::filesystem::exists(dir / L"repro_vr_installed.manifest", ec)) {
-                enabled_state = 1;
-            } else {
-                enabled_state = -1;
+            if (std::filesystem::exists(ini_path, ec)) {
+                wanted = GetPrivateProfileIntW(L"diagnostics", L"live_log", 0, ini_path.c_str());
+                if (wanted == 0) {
+                    wanted = GetPrivateProfileIntW(L"logging", L"live_log", 0, ini_path.c_str());
+                }
+            }
+            if (wanted == 0 && std::filesystem::exists(repro_ini_path, ec)) {
+                wanted = GetPrivateProfileIntW(L"diagnostics", L"live_log", 0, repro_ini_path.c_str());
+                if (wanted == 0) {
+                    wanted = GetPrivateProfileIntW(L"logging", L"live_log", 0, repro_ini_path.c_str());
+                }
+            }
+
+            if (wanted == 1) {
+                const auto log_path = dir / L"reprovr_live.log";
+                log_file = CreateFileW(
+                    log_path.c_str(),
+                    FILE_APPEND_DATA,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    nullptr,
+                    OPEN_ALWAYS,
+                    FILE_ATTRIBUTE_NORMAL,
+                    nullptr);
+                if (log_file != INVALID_HANDLE_VALUE) {
+                    active.store(true, std::memory_order_release);
+                    worker = std::thread([this] { run(); });
+                    SetThreadPriority(worker.native_handle(), THREAD_PRIORITY_BELOW_NORMAL);
+                }
+            }
+        } catch (...) {
+            active.store(false, std::memory_order_release);
+        }
+    }
+
+    void log(const char* buf, std::size_t len) noexcept {
+        if (!active.load(std::memory_order_relaxed)) return;
+        try {
+            std::unique_lock lock(mutex);
+            if (queue.size() < 512) {
+                queue.emplace_back(buf, len);
+                cv.notify_one();
+            }
+        } catch (...) {}
+    }
+
+    void run() noexcept {
+        while (!stopping.load(std::memory_order_relaxed)) {
+            std::vector<std::string> to_write;
+            {
+                std::unique_lock lock(mutex);
+                cv.wait_for(lock, std::chrono::milliseconds(250), [this] {
+                    return !queue.empty() || stopping.load(std::memory_order_relaxed);
+                });
+                if (queue.empty() && stopping.load(std::memory_order_relaxed)) {
+                    break;
+                }
+                to_write.swap(queue);
+            }
+            if (log_file != INVALID_HANDLE_VALUE && !to_write.empty()) {
+                for (const auto& line : to_write) {
+                    DWORD written = 0;
+                    WriteFile(log_file, line.data(), static_cast<DWORD>(line.size()), &written, nullptr);
+                }
             }
         }
-        if (enabled_state < 0) {
-            return;
+    }
+
+    ~AsyncLiveLogger() {
+        stopping.store(true, std::memory_order_relaxed);
+        cv.notify_all();
+        if (worker.joinable()) {
+            worker.join();
         }
-        if (log_file == INVALID_HANDLE_VALUE) {
-            const auto log_path = current_layer_directory() / L"reprovr_live.log";
-            log_file = CreateFileW(
-                log_path.c_str(),
-                FILE_APPEND_DATA,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                nullptr,
-                OPEN_ALWAYS,
-                FILE_ATTRIBUTE_NORMAL,
-                nullptr);
+        if (log_file != INVALID_HANDLE_VALUE) {
+            CloseHandle(log_file);
+            log_file = INVALID_HANDLE_VALUE;
         }
-        if (log_file == INVALID_HANDLE_VALUE) {
+    }
+};
+
+AsyncLiveLogger g_async_live_logger;
+} // namespace
+
+void reprovr_live_log(const char* fmt, ...) noexcept {
+    try {
+        static std::once_flag init_flag;
+        std::call_once(init_flag, [] { g_async_live_logger.init_if_needed(); });
+        if (!g_async_live_logger.active.load(std::memory_order_relaxed)) {
             return;
         }
         SYSTEMTIME st{};
@@ -346,8 +422,7 @@ void reprovr_live_log(const char* fmt, ...) noexcept {
             const int total = prefix + (body > 0 ? body : 0);
             const int clamped = std::min<int>(total, static_cast<int>(sizeof(buf) - 2));
             buf[clamped] = '\n';
-            DWORD written = 0;
-            WriteFile(log_file, buf, static_cast<DWORD>(clamped + 1), &written, nullptr);
+            g_async_live_logger.log(buf, static_cast<std::size_t>(clamped + 1));
         }
     } catch (...) {
     }
@@ -5513,7 +5588,7 @@ void poll_phase2_tuning_once_per_second() noexcept {
                 expected, now_ns, std::memory_order_relaxed);
             return;
         }
-        if (now_ns - expected < 1'000'000'000LL) {
+        if (now_ns - expected < 3'000'000'000LL) {
             return;
         }
         if (!last_attempt_ns.compare_exchange_strong(
@@ -11378,7 +11453,7 @@ struct PreparedProjectionFrame {
                     xrfg::bb::st().last_synth_us.load(std::memory_order_relaxed),
                     xrfg::bb::st().last_wait_us.load(std::memory_order_relaxed),
                     q_real, q_synth);
-                if (FAILED(submit_result) || n <= 16 || (n % 300 == 0)) {
+                if (FAILED(submit_result) || n <= 16) {
                     const HRESULT removed_hr =
                         state->session->d3d12_device
                             ? state->session->d3d12_device->GetDeviceRemovedReason()
