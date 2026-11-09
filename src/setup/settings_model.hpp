@@ -44,80 +44,74 @@ inline const std::vector<Setting>& settings() {
     static const std::vector<Setting> table{
         {L"ofxr", L"enabled", Kind::toggle,
          L"Enable reprojection",
-         L"Turns everything off without uninstalling: the game runs as it normally "
-         L"would, with no synthesised frames. The quickest way to compare with your "
-         L"own eyes before changing anything else.",
+         L"Purpose: Master toggle to enable or bypass frame synthesis.\n"
+         L"Impact: When Off, the game runs at its native unassisted frame rate with zero synthesis overhead. Ideal for immediate A/B visual comparison.",
          {L"1", L"0"}, {L"On", L"Off"}, L"General"},
         {L"ofxr", L"motion_vectors", Kind::choice,
          L"Motion vector source",
-         L"Estimated lets the tool measure motion itself: the safest option, and the "
-         L"one used as the reference. Game (DLSS) reuses the vectors the game hands to "
-         L"its upscaler: more precise when they describe temporal motion, but some "
-         L"games put something else there and the result degrades.",
+         L"Purpose: Selects how motion vectors are calculated.\n"
+         L"Impact: 'Estimated' uses GPU optical flow and works universally on all games. 'Game (DLSS)' reuses engine motion vectors for sharper geometry edges, but may artifact in games with non-standard vector encodings.",
          {L"off", L"dlss"}, {L"Estimated", L"Game (DLSS)"}, L"Reprojection"},
         {L"ofxr", L"backend", Kind::choice,
          L"Optical flow engine",
-         L"FidelityFX works on any GPU. NVIDIA OFA uses the dedicated hardware in "
-         L"recent cards: faster and often steadier, but unavailable elsewhere.",
+         L"Purpose: Chooses the optical flow computation engine.\n"
+         L"Impact: 'NVIDIA OFA' runs on dedicated RTX hardware chips (~1 ms GPU time, zero compute core load). 'FidelityFX' runs on general compute shaders on any GPU (AMD/Intel/NVIDIA), but uses compute ALU headroom.",
          {L"fidelityfx", L"nvidia"}, {L"FidelityFX", L"NVIDIA OFA"}, L"Reprojection"},
         {L"ofxr", L"stereo_input_mode", Kind::choice,
          L"Stereo input mode",
-         L"Auto detects what the game does. Native is for games that already render "
-         L"both eyes in one frame (recommended for native VR titles). AER is for games "
-         L"that render a single eye per frame.",
+         L"Purpose: Configures the stereo rendering pipeline.\n"
+         L"Impact: 'Native' is recommended for VR games rendering both eyes per frame. 'AER' (Alternate Eye Rendering) is for flat-to-VR mods (Luke Ross, UEVR AER) that render one eye per frame, cutting geometry load in half.",
          {L"auto", L"native", L"aer"}, {L"Auto", L"Native stereo", L"AER"},
          L"Reprojection"},
         {L"ofxr", L"triple_frame_gen", Kind::choice,
          L"Frames per rendered pair",
-         L"x2 inserts one frame between two game frames: the usual case. x3 inserts "
-         L"two, for a higher target, at the price of one frame in three being fully "
-         L"synthesised and therefore less faithful.",
+         L"Purpose: Chooses between 2X and 3X frame synthesis.\n"
+         L"Impact: 'x2' inserts 1 synthetic frame per real frame (e.g. 45 -> 90 Hz). 'x3' inserts 2 synthetic frames (e.g. 40 -> 120 Hz) for high-refresh headsets, lowering game CPU/GPU demand even further.",
          {L"0", L"1"}, {L"x2 (one added frame)", L"x3 (two added frames)"},
          L"Performance"},
         {L"ofxr", L"target_app_fps", Kind::choice,
          L"Application frame rate (Base)",
-         L"The base frame rate rendered by the game engine (NOT the final headset refresh rate). "
-         L"Auto locks the engine to HMD_Hz / Multiplier (e.g. 45 fps base for a 90 Hz headset in 2X). "
-         L"Fixed values manually force this base cadence if auto oscillates.",
+         L"Purpose: Locks the base game engine rendering pace (NOT the headset display refresh rate).\n"
+         L"Impact: 'Auto' locks the engine to HMD_Hz / Multiplier (e.g. 45 fps base for a 90 Hz headset in 2X). Eliminates cadence judder. Fixed values manually force this base cadence if auto oscillates.",
          {L"auto", L"45", L"60", L"72", L"90"},
          {L"Auto", L"45 fps", L"60 fps", L"72 fps", L"90 fps"}, L"Performance"},
         {L"ofxr", L"deep_pipeline", Kind::toggle,
          L"Deep pipeline",
-         L"Full processing of frame pairs, which gives the better synthesis quality. "
-         L"Turn it off only when GPU load becomes a problem.",
+         L"Purpose: Allocates a deeper frame queue buffer for synthesis.\n"
+         L"Impact: Maximizes synthesis stability and smooths out momentary game hitches. Adds ~1 frame of latency; disable if latency or VRAM is tight.",
          {L"1", L"0"}, {L"On", L"Off"}, L"Performance"},
         {L"ofxr", L"nvidia_preset", Kind::choice,
          L"NVIDIA OFA preset",
-         L"Speed against quality for the hardware optical flow. No effect when the "
-         L"engine is FidelityFX.",
+         L"Purpose: Adjusts the quality vs performance preset of NVIDIA Optical Flow.\n"
+         L"Impact: 'Quality' produces the finest vector detail. 'Speed' minimizes optical flow execution time. No effect on FidelityFX.",
          {L"slow", L"medium", L"fast"}, {L"Quality", L"Balanced", L"Speed"},
          L"Performance"},
         {L"ofxr", L"nvidia_input_scale", Kind::choice,
          L"OFA input resolution",
-         L"Flow is estimated on a reduced image. 50% costs far less but loses small "
-         L"motions; 100% is the reference.",
+         L"Purpose: Downscales the resolution used for motion estimation.\n"
+         L"Impact: '50%' cuts optical flow compute time by ~3x with great results for fast action. '100%' offers maximum accuracy for tiny distant objects.",
          {L"100", L"75", L"50"}, {L"100%", L"75%", L"50%"}, L"Performance"},
         {L"ofxr", L"nvidia_bidirectional", Kind::toggle,
          L"Bidirectional flow",
-         L"Also estimates the backward flow, which doubles the estimation cost and "
-         L"improves how coherent the synthesised frames are. No effect with FidelityFX.",
+         L"Purpose: Estimates optical flow in both forward and backward directions.\n"
+         L"Impact: Improves temporal consistency and reduces occlusion boundary warping, but doubles optical flow calculation time. No effect on FidelityFX.",
          {L"1", L"0"}, {L"On", L"Off"}, L"Performance"},
         {L"overlay", L"position", Kind::choice,
          L"On-screen counters",
-         L"Shows the real frame rate and the number of synthesised frames, in a corner "
-         L"of the headset. Handy while measuring, off the rest of the time.",
+         L"Purpose: Displays a floating real-time performance HUD inside the headset.\n"
+         L"Impact: Shows base rendered FPS vs synthesized HMD refresh rate in your chosen corner. Negligible performance overhead.",
          {L"off", L"upper_left", L"upper_right", L"lower_left", L"lower_right"},
          {L"Off", L"Top left", L"Top right", L"Bottom left", L"Bottom right"},
          L"Diagnostics"},
         {L"diagnostics", L"logging_enabled", Kind::toggle,
          L"Detailed log",
-         L"Writes a session log next to the game. The cost is negligible, but the file "
-         L"grows quickly: enable it only to understand a problem.",
+         L"Purpose: Records verbose frame timing and state transitions to repro_vr.log.\n"
+         L"Impact: Negligible GPU impact, but log file grows quickly. Keep Off unless investigating an issue.",
          {L"1", L"0"}, {L"On", L"Off"}, L"Diagnostics"},
         {L"diagnostics", L"dump_guides", Kind::toggle,
          L"Capture debug guides",
-         L"Writes diagnostic textures on request, for offline analysis. Of no use in "
-         L"normal play, and expensive while it is active.",
+         L"Purpose: Dumps raw optical flow vectors and depth textures to disk for offline analysis.\n"
+         L"Impact: Causes severe frame drops while writing files. For mod development only.",
          {L"1", L"0"}, {L"On", L"Off"}, L"Diagnostics"},
     };
     return table;

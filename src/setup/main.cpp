@@ -78,6 +78,7 @@ enum class Action {
     install,
     uninstall,
     choice,
+    help_icon,
 };
 
 // One clickable cell of a segmented control.
@@ -91,6 +92,7 @@ struct Row {
     D2D1_RECT_F rect{};
     int setting{};
     int chosen{};
+    D2D1_RECT_F help_rect{};
     std::vector<Cell> cells;
 };
 
@@ -410,6 +412,17 @@ void layout(App& app) {
         float x = right - total_cells;
         const float cell_height = app.dp(kSegmentHeight);
         const float cell_top = row_top + (app.dp(kRowHeight) - cell_height) / 2.0f;
+
+        // Position the '?' help badge right before the segmented control
+        const float help_size = app.dp(20.0f);
+        const float help_x = x - app.dp(28.0f);
+        const float help_top = row_top + (app.dp(kRowHeight) - help_size) / 2.0f;
+        const D2D1_RECT_F help_raw = D2D1::RectF(help_x, help_top, help_x + help_size, help_top + help_size);
+        const D2D1_RECT_F help_visible = clipped(help_raw, body);
+        if (!empty(help_visible)) {
+            entry.help_rect = help_raw;
+        }
+
         for (std::size_t c = 0; c < setting.labels.size(); ++c) {
             const D2D1_RECT_F cell_rect =
                 D2D1::RectF(x, cell_top, x + widths[c], cell_top + cell_height);
@@ -438,6 +451,9 @@ Target hit_test(App& app, float x, float y) {
         }
     }
     for (const auto& row : app.rows) {
+        if (inside(row.help_rect, x, y)) {
+            return Target{Action::help_icon, -1, row.setting, -1};
+        }
         for (const auto& cell : row.cells) {
             if (inside(cell.rect, x, y)) {
                 return Target{Action::choice, -1, row.setting, cell.option};
@@ -540,10 +556,25 @@ void paint_row(App& app, const Row& row) {
     const float cells_left = row.cells.empty()
         ? row.rect.right
         : row.cells.front().rect.left;
+
+    // Draw help (?) circular badge
+    if (row.help_rect.right > row.help_rect.left) {
+        const bool help_hot = (app.hot.action == Action::help_icon && app.hot.setting == row.setting);
+        fill_round(app, row.help_rect, help_hot ? kAccentSoft : kTrack, app.dp(10.0f));
+        stroke_round(app, row.help_rect, help_hot ? kAccent : kBorder, app.dp(10.0f), 1.0f);
+        draw_text(app, L"?", app.caption.Get(), row.help_rect,
+                  help_hot ? kAccent : kMuted,
+                  DWRITE_TEXT_ALIGNMENT_CENTER);
+    }
+
+    const float title_right = (row.help_rect.left > row.rect.left)
+        ? (row.help_rect.left - app.dp(8.0f))
+        : (cells_left - app.dp(16.0f));
+
     draw_ellipsis_text(
         app, setting.title, app.body.Get(),
         D2D1::RectF(row.rect.left + app.dp(kPad), row.rect.top,
-                    cells_left - app.dp(16.0f), row.rect.bottom),
+                    title_right, row.rect.bottom),
         kText);
 
     // The whole segment track, then the selected and hovered cells on top of it.
@@ -619,7 +650,7 @@ void paint_content(App& app) {
 
 void paint_tooltip(App& app) {
     if (app.tooltip.empty()) return;
-    const float width = app.dp(400.0f);
+    const float width = app.dp(480.0f);
     const D2D1_RECT_F anchor = app.tooltip_anchor;
     ComPtr<IDWriteTextLayout> layout;
     if (FAILED(app.dwrite->CreateTextLayout(
@@ -630,18 +661,19 @@ void paint_tooltip(App& app) {
     }
     DWRITE_TEXT_METRICS metrics{};
     if (FAILED(layout->GetMetrics(&metrics))) return;
-    const float height = metrics.height + app.dp(20.0f);
+    const float height = metrics.height + app.dp(24.0f);
 
     float x = anchor.left;
-    float y = anchor.bottom + app.dp(10.0f);
+    float y = anchor.bottom + app.dp(8.0f);
     if (x + width > app.width - app.dp(10.0f)) x = app.width - width - app.dp(10.0f);
-    if (y + height > app.height - app.dp(10.0f)) y = anchor.top - height - app.dp(10.0f);
+    if (y + height > app.height - app.dp(10.0f)) y = anchor.top - height - app.dp(8.0f);
     x = std::max(x, app.dp(10.0f));
     y = std::max(y, app.dp(10.0f));
     const D2D1_RECT_F box = D2D1::RectF(x, y, x + width, y + height);
-    fill_round(app, box, kTooltip, 10.0f);
+    fill_round(app, box, kTooltip, 8.0f);
+    stroke_round(app, box, D2D1::ColorF(0x3B434D), 8.0f, 1.0f);
     draw_text(app, app.tooltip, app.caption.Get(),
-              inset(box, app.dp(14.0f), app.dp(10.0f)), D2D1::ColorF(0xF2F3F5),
+              inset(box, app.dp(14.0f), app.dp(12.0f)), D2D1::ColorF(0xF2F3F5),
               DWRITE_TEXT_ALIGNMENT_LEADING, true);
 }
 
@@ -815,6 +847,18 @@ bool self_check(App& app, float scroll, std::string* report = nullptr) {
                 fail("a cell does not resolve to itself");
             }
         }
+        if (row.help_rect.right > row.help_rect.left) {
+            if (row.help_rect.left < row.rect.left || row.help_rect.right > row.rect.right ||
+                row.help_rect.top < row.rect.top || row.help_rect.bottom > row.rect.bottom) {
+                fail("help icon leaves its row");
+            }
+            const Target hit =
+                hit_test(app, (row.help_rect.left + row.help_rect.right) / 2.0f,
+                         (row.help_rect.top + row.help_rect.bottom) / 2.0f);
+            if (hit.action != Action::help_icon || hit.setting != row.setting) {
+                fail("help icon does not resolve to itself");
+            }
+        }
     }
     // Rows must not share pixels: two visible cards over the same point would make
     // the click ambiguous.
@@ -892,11 +936,11 @@ LRESULT handle_message(App& app, HWND hwnd, UINT message, WPARAM wparam,
             // The explanation of the row under the mouse, never a modal dialog.
             std::wstring tooltip;
             D2D1_RECT_F anchor{};
-            if (app.hot.action == Action::choice && app.hot.setting >= 0) {
+            if ((app.hot.action == Action::choice || app.hot.action == Action::help_icon) && app.hot.setting >= 0) {
                 for (const auto& row : app.rows) {
                     if (row.setting == app.hot.setting) {
                         tooltip = settings()[static_cast<std::size_t>(row.setting)].help;
-                        anchor = row.rect;
+                        anchor = (app.hot.action == Action::help_icon) ? row.help_rect : row.rect;
                         break;
                     }
                 }
