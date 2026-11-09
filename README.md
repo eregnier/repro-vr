@@ -6,7 +6,9 @@
 
 **ReproVR** is a high-performance, non-intrusive OpenXR implicit API layer that provides real-time **2X and 3X stereoscopic frame synthesis** for PC VR games and simulators. 
 
-Engineered as a clean-room implementation inspired by modern mobile and PC VR forward reprojection architectures (such as Application SpaceWarp principles), it synthesizes smooth intermediate frames directly on the GPU using hardware optical flow and motion vectors.
+Engineered as a clean-room implementation inspired by modern forward reprojection principles (such as SpaceWarp architectures), it synthesizes smooth intermediate frames directly on the GPU using hardware optical flow and motion vectors. 
+
+> In terms of motion smoothness and visual comfort, the result feels — to my eyes — every bit as good as Meta's native reprojection, but completely **PCVR and runtime agnostic** (SteamVR, Virtual Desktop, Pimax Play, Meta Link).
 
 ---
 
