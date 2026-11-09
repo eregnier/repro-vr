@@ -42,8 +42,8 @@ Engineered as a clean-room implementation inspired by modern forward reprojectio
   * Pimax Play / PimaxXR (Crystal, Crystal Light, Dream Air, 8KX).
   * Meta Quest Link / AirLink.
 * **Motion Vector & Flow Backends**:
-  * **NVIDIA OFA (Optical Flow Accelerator)**: Turing, Ampere, Ada Lovelace, Blackwell GPUs.
-  * **AMD FidelityFX / Optical Flow**: Universal fallback for all modern GPUs.
+  * **NVIDIA OFA (Optical Flow Accelerator)**: Turing, Ampere, Ada Lovelace, Blackwell GPUs (extensively tested and verified).
+  * **AMD FidelityFX / Optical Flow**: Universal fallback for all modern GPUs (*Note: fully implemented via FidelityFX SDK v1.1.4, but not extensively tested in-game on real AMD hardware — feedback is welcome!*).
   * **DLSS Game Motion Vectors**: Automatic extraction when available in supported titles.
 
 ---
@@ -87,6 +87,7 @@ Settings can be changed before launching or **on the fly while playing** via `re
 
 * **Perceptual Smoothness**: In demanding titles (Microsoft Flight Simulator, DCS World, heavily modded Skyrim VR, Subnautica, UEVR titles), synthesizing frames doubles effective motion smoothness with virtually zero ghosting on the "butter-smooth" pipeline.
 * **Inference Overhead**: Hardware optical flow execution consumes ~1.0–2.0 ms of GPU time. For best results, configure your game so that your GPU has ~15–20% headroom at the halved base frame rate.
+* **Hardware Testing**: Thoroughly tested and tuned on NVIDIA RTX cards. The AMD FidelityFX fallback path is fully coded in the pipeline but has not been tested on real AMD hardware yet.
 
 ---
 
