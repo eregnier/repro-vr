@@ -1,7 +1,7 @@
 # ReproVR — Universal 6-DOF Frame Synthesis & Forward Reprojection OpenXR Layer
 
 [![License: LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg)](LICENSE)
-[![Release: v1.0.0](https://img.shields.io/badge/Release-v1.0.0--butter--smooth-green.svg)](https://github.com/eregnier/repro-vr/releases/tag/v1.0.0)
+[![Release: v1.0.1](https://img.shields.io/badge/Release-v1.0.1--butter--smooth-green.svg)](https://github.com/eregnier/repro-vr/releases/tag/v1.0.1)
 [![Platform: Windows x64](https://img.shields.io/badge/Platform-Windows%20x64-lightgrey.svg)]()
 
 **ReproVR** is a high-performance, non-intrusive OpenXR implicit API layer that provides real-time **2X and 3X stereoscopic frame synthesis** for PC VR games and simulators. 
@@ -9,6 +9,17 @@
 Engineered as a clean-room implementation inspired by modern forward reprojection principles (such as SpaceWarp architectures), it synthesizes smooth intermediate frames directly on the GPU using hardware optical flow and motion vectors. 
 
 > In terms of motion smoothness and visual comfort, the result feels — to my eyes — every bit as good as Meta's native reprojection, but completely **PCVR and runtime agnostic** (SteamVR, Virtual Desktop, Pimax Play, Meta Link).
+
+---
+
+### ⚖️ The VR Reprojection vs Traditional Frame Gen Tradeoff
+
+Understanding the difference between **ReproVR (Forward Reprojection)** and traditional flat-screen Frame Generation (such as DLSS 3 / FSR 3 Frame Gen) is essential:
+
+* **The Huge Advantage: Near-Zero Latency & Instant Response**  
+  Traditional frame generation adds 1 to 2 frames of input lag because it must hold back frames to interpolate between them. In VR, added latency can immediately induce motion sickness. ReproVR projects strictly *forward* in time and binds the synthetic frame directly to your physical head pose at the scanout instant. Controller inputs and head tracking feel completely instantaneous.
+* **The Tradeoff: Occasional Reprojection Edge Warping**  
+  Because forward reprojection predicts forward rather than interpolating between two known images, some minor reprojection artifacts may be visible in edge cases — specifically around thin, high-contrast geometry (antennae, chain-link fences, fine foliage) during rapid head or camera rotation. While our built-in **Luma Shield** protects text and HUD elements from warping, this is the classic VR tradeoff: **immediate latency and doubled smoothness in exchange for minor edge warping under fast motion**.
 
 ---
 
@@ -65,6 +76,14 @@ Launch **`reprovr_setup.exe`**:
 
 #### 4. Play
 Start your game normally! The layer automatically activates when the game initializes OpenXR.
+
+---
+
+### ⚠️ Crucial UEVR Note (Virtual Desktop)
+
+If you are playing Unreal Engine games modded via **UEVR** on **Virtual Desktop**:
+* Open the in-game UEVR menu and **DISABLE / UNCHECK the "Virtual Desktop fix"** setting.
+* **Why**: ReproVR manages frame pacing and swapchain submission natively. Keeping the UEVR "Virtual Desktop fix" enabled conflicts with presentation timing, creating severe frame pacing judder and desynchronization. Disabling it ensures a butter-smooth, stutter-free experience.
 
 ---
 
