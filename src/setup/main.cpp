@@ -650,18 +650,28 @@ void paint_content(App& app) {
 
 void paint_tooltip(App& app) {
     if (app.tooltip.empty()) return;
-    const float width = app.dp(480.0f);
+    const float max_text_width = std::min(app.dp(520.0f), app.width - app.dp(40.0f));
     const D2D1_RECT_F anchor = app.tooltip_anchor;
     ComPtr<IDWriteTextLayout> layout;
     if (FAILED(app.dwrite->CreateTextLayout(
             app.tooltip.c_str(), static_cast<UINT32>(app.tooltip.size()),
-            app.caption.Get(), width - app.dp(28.0f), app.height,
+            app.caption.Get(), max_text_width, app.height,
             layout.GetAddressOf()))) {
         return;
     }
+    // Enable word wrapping so multi-line text wraps and measures its full height!
+    layout->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+    layout->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+    layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+
     DWRITE_TEXT_METRICS metrics{};
     if (FAILED(layout->GetMetrics(&metrics))) return;
-    const float height = metrics.height + app.dp(24.0f);
+
+    const float pad_x = app.dp(16.0f);
+    const float pad_y = app.dp(12.0f);
+    const float content_width = std::max(metrics.widthIncludingTrailingWhitespace, app.dp(200.0f));
+    const float width = std::min(content_width + pad_x * 2.0f, app.width - app.dp(20.0f));
+    const float height = metrics.height + pad_y * 2.0f;
 
     float x = anchor.left;
     float y = anchor.bottom + app.dp(8.0f);
@@ -669,12 +679,14 @@ void paint_tooltip(App& app) {
     if (y + height > app.height - app.dp(10.0f)) y = anchor.top - height - app.dp(8.0f);
     x = std::max(x, app.dp(10.0f));
     y = std::max(y, app.dp(10.0f));
+
     const D2D1_RECT_F box = D2D1::RectF(x, y, x + width, y + height);
     fill_round(app, box, kTooltip, 8.0f);
     stroke_round(app, box, D2D1::ColorF(0x3B434D), 8.0f, 1.0f);
-    draw_text(app, app.tooltip, app.caption.Get(),
-              inset(box, app.dp(14.0f), app.dp(12.0f)), D2D1::ColorF(0xF2F3F5),
-              DWRITE_TEXT_ALIGNMENT_LEADING, true);
+
+    app.brush->SetColor(D2D1::ColorF(0xF2F3F5));
+    app.target->DrawTextLayout(D2D1::Point2F(x + pad_x, y + pad_y), layout.Get(),
+                              app.brush.Get());
 }
 
 void paint(App& app) {
