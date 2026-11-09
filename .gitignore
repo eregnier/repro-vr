@@ -4,10 +4,7 @@
 /external/FidelityFX-SDK-v1.1.4/
 /external/openvr/
 /RuntimeLayer/
-
-# Dump & R&D Quest 3 (binaires Meta, ~216 Mo) — gitignoré pour le moment.
-# Voir docs/quest3_dump/README.md (§6) pour un versionnage sélectif ultérieur.
-/docs/quest3_dump/
+/dist/
 
 CMakeCache.txt
 CMakeFiles/

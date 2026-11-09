@@ -66,9 +66,11 @@ int main(int argc, char** argv) {
     require(
         std::filesystem::exists(install_res.installed_manifest_json),
         "Installed OpenXR manifest JSON must exist in game directory");
+    // The canonical name since the configuration was unified into repro_vr.ini;
+    // the legacy ofxr_bridge.ini is only accepted as an installation source.
     require(
-        std::filesystem::exists(target_game / "ofxr_bridge.ini"),
-        "Installed ofxr_bridge.ini must exist in game directory");
+        std::filesystem::exists(target_game / "repro_vr.ini"),
+        "Installed repro_vr.ini must exist in game directory");
 
     // 2. Test bootstrap_repro_vr_from_directory on the installed game directory:
     SetEnvironmentVariableW(L"XR_API_LAYER_PATH", nullptr);

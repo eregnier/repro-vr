@@ -12412,12 +12412,28 @@ void consume_application_frame(
 void apply_embedded_control(
     const std::shared_ptr<SessionState>& state,
     bool use_continuous_presenter) {
+    // Settings edited on disk while the game runs land here: at most one INI read
+    // per half second, and nothing happens unless a key actually changed.
+    xrfg::embedded::poll_ini();
     const auto control = xrfg::embedded::snapshot();
     const bool paused = state->manual_control.pause_requested();
     const bool recording = xrfg::bridge_flight_logger().enabled();
     if (state->control_revision == control.revision &&
         paused == state->pause_applied &&
         recording == state->recorder_applied) return;
+    if (state->control_revision != control.revision) {
+        // Measurable trace of a settings change picked up from the INI while the
+        // session runs: without this line, "the live reload worked" would be an
+        // opinion rather than something the log can show.
+        xrfg::bb::logf(
+            "[LIVE] control revision %llu -> %llu enabled=%d backend=%d preset=%d "
+            "scale=%d bidirectional=%d motion_vectors=%d",
+            static_cast<unsigned long long>(state->control_revision),
+            static_cast<unsigned long long>(control.revision),
+            control.desired.enabled ? 1 : 0, control.desired.backend,
+            control.desired.preset, control.desired.scale,
+            control.desired.backward ? 1 : 0, control.desired.motion_vectors);
+    }
     if ((paused != state->pause_applied ||
          recording != state->recorder_applied) &&
         use_continuous_presenter &&
