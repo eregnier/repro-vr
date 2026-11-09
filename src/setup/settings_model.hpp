@@ -75,10 +75,10 @@ inline const std::vector<Setting>& settings() {
          {L"0", L"1"}, {L"x2 (one added frame)", L"x3 (two added frames)"},
          L"Performance"},
         {L"ofxr", L"target_app_fps", Kind::choice,
-         L"Application frame rate",
-         L"Auto lets the tool work out what to ask the game for. Fixed values are for "
-         L"when the automatic rate oscillates: they steady the pacing at the cost of a "
-         L"little headroom.",
+         L"Application frame rate (Base)",
+         L"The base frame rate rendered by the game engine (NOT the final headset refresh rate). "
+         L"Auto locks the engine to HMD_Hz / Multiplier (e.g. 45 fps base for a 90 Hz headset in 2X). "
+         L"Fixed values manually force this base cadence if auto oscillates.",
          {L"auto", L"45", L"60", L"72", L"90"},
          {L"Auto", L"45 fps", L"60 fps", L"72 fps", L"90 fps"}, L"Performance"},
         {L"ofxr", L"deep_pipeline", Kind::toggle,

@@ -77,7 +77,7 @@ Settings can be changed before launching or **on the fly while playing** via `re
 | `enabled` | `on` / `off` | Master toggle for frame synthesis. |
 | `backend` | `FidelityFX` / `NVIDIA OFA` | Optical flow calculation engine. |
 | `triple_frame_gen` | `2 images (2X)` / `3 images (3X)` | 2X synthesizes 1 frame per real frame; 3X synthesizes 2 frames. |
-| `target_app_fps` | `auto`, `45`, `60`, `72`, `90` | Locks engine presentation cadence to prevent frame pacing judder. |
+| `target_app_fps` | `auto`, `45`, `60`, `72`, `90` | **Base engine FPS** (what the game computes, NOT the headset display rate). E.g. 45 FPS base yields 90 Hz in the headset with 2X, or 40 FPS base yields 120 Hz with 3X. `auto` automatically locks the engine to `HMD_Hz / Multiplier`. |
 | `stereo_input_mode` | `auto`, `native`, `AER` | Native stereo vs Alternate Eye Rendering (AER). |
 | `overlay` | `off`, `TL`, `TR`, `BL`, `BR` | On-screen HUD displaying real vs synthesized frame rates. |
 
