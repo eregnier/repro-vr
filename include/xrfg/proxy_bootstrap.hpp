@@ -43,4 +43,15 @@ struct GameDropInInstallResult {
 [[nodiscard]] bool remove_dropin_from_game_directory(
     const std::filesystem::path& target_game_dir) noexcept;
 
+// Returns the candidate proxy filename to use for target_game_dir:
+// Priority order: version.dll -> winmm.dll -> dxgi.dll.
+// If a candidate already exists and was not installed by ReproVR, the next available candidate is chosen.
+[[nodiscard]] std::wstring select_available_proxy_filename(
+    const std::filesystem::path& target_game_dir) noexcept;
+
+// Checks whether an existing proxy DLL in target_game_dir was installed by ReproVR.
+[[nodiscard]] bool is_repro_vr_proxy(
+    const std::filesystem::path& target_game_dir,
+    const std::wstring& proxy_filename) noexcept;
+
 }  // namespace xrfg

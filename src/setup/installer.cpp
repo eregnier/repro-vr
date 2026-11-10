@@ -46,6 +46,9 @@ std::filesystem::path appdata_directory() {
     return result;
 }
 
+constexpr wchar_t kInstallMarkerName[] = L"repro_vr_installed.manifest";
+constexpr const wchar_t* kProxyCandidates[] = {L"version.dll", L"winmm.dll", L"dxgi.dll"};
+
 bool copy_if_needed(const std::filesystem::path& from,
                     const std::filesystem::path& to, std::wstring* error) {
     std::error_code code;
@@ -350,6 +353,62 @@ bool install(const std::filesystem::path& game_directory,
     const auto dll_target = game_directory / kLayerDll;
     if (!copy_if_needed(source / kLayerDll, dll_target, error)) return false;
     if (!write_manifest(game_directory, dll_target, error)) return false;
+
+    // Install proxy DLL if present in source bundle, with fallback candidate selection
+    std::filesystem::path source_proxy;
+    for (const wchar_t* p : {L"version.dll", L"ReproVR_version_proxy.dll", L"ReproVR_proxy.dll"}) {
+        if (std::filesystem::exists(source / p, code) && !code) {
+            source_proxy = source / p;
+            break;
+        }
+    }
+
+    if (!source_proxy.empty()) {
+        std::wstring chosen_proxy;
+        const auto marker_path = game_directory / kInstallMarkerName;
+        if (std::filesystem::exists(marker_path, code) && !code) {
+            std::ifstream mf(marker_path);
+            std::string line;
+            while (std::getline(mf, line)) {
+                if (line.rfind("proxy=", 0) == 0 && line.size() > 6) {
+                    chosen_proxy = std::wstring(line.begin() + 6, line.end());
+                    break;
+                }
+            }
+        }
+
+        if (chosen_proxy.empty()) {
+            for (const wchar_t* cand : kProxyCandidates) {
+                const auto cand_path = game_directory / cand;
+                if (!std::filesystem::exists(cand_path, code)) {
+                    chosen_proxy = cand;
+                    break;
+                }
+                // Check if existing file is our own proxy
+                HMODULE hProbe = LoadLibraryExW(cand_path.c_str(), nullptr, DONT_RESOLVE_DLL_REFERENCES);
+                if (hProbe != nullptr) {
+                    const bool is_ours = GetProcAddress(hProbe, "ReproVR_GetProxyBootstrapStatus") != nullptr;
+                    FreeLibrary(hProbe);
+                    if (is_ours) {
+                        chosen_proxy = cand;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (!chosen_proxy.empty()) {
+            const auto target_proxy = game_directory / chosen_proxy;
+            if (!copy_if_needed(source_proxy, target_proxy, error)) {
+                return false;
+            }
+            std::string narrow_proxy;
+            for (const wchar_t ch : chosen_proxy) narrow_proxy += static_cast<char>(ch);
+            std::ofstream marker(marker_path, std::ios::binary | std::ios::trunc);
+            marker << "ReproVR Installed\nproxy=" << narrow_proxy << "\n";
+        }
+    }
+
     // Both names: the layer resolves repro_vr.ini first, but its embedded
     // control block reads ofxr_bridge.ini directly, so a key written to one
     // file is honoured by half the readers and silently ignored by the rest.
@@ -377,6 +436,24 @@ bool uninstall(const std::filesystem::path& game_directory, std::wstring* error)
             return false;
         }
     }
+
+    const auto marker_path = game_directory / kInstallMarkerName;
+    if (std::filesystem::exists(marker_path, code) && !code) {
+        std::ifstream mf(marker_path);
+        std::string line;
+        std::wstring proxy_to_remove;
+        while (std::getline(mf, line)) {
+            if (line.rfind("proxy=", 0) == 0 && line.size() > 6) {
+                proxy_to_remove = std::wstring(line.begin() + 6, line.end());
+                break;
+            }
+        }
+        if (!proxy_to_remove.empty()) {
+            std::filesystem::remove(game_directory / proxy_to_remove, code);
+        }
+        std::filesystem::remove(marker_path, code);
+    }
+
     // repro_vr.ini holds the user's settings: uninstalling leaves it alone.
     return true;
 }

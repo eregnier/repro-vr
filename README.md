@@ -37,6 +37,7 @@ Understanding the difference between **ReproVR (Forward Reprojection)** and trad
   * Portable, lightweight Direct2D management app.
   * Automatically discovers installed VR games across your Steam libraries.
   * One-click **Install** and **Uninstall** per game.
+  * **Smart Proxy Auto-Fallback**: If `version.dll` already exists in the game folder (e.g. UEVR, ReShade), ReproVR automatically selects the next available proxy candidate (`winmm.dll`, then `dxgi.dll`) and forwards all system calls seamlessly. Both mods run concurrently with zero conflict.
   * Real-time settings adjustment with hot-reloading while the game is running.
 * **Pure Clean-Room Implementation**:
   * Zero proprietary or copyrighted binary dependencies. Pure C++20 and HLSL shaders.

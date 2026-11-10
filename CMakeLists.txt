@@ -1040,7 +1040,7 @@ if(WIN32 AND XRFG_BUILD_LAYER)
         add_executable(xrfg_version_proxy_tests
             tests/version_proxy_tests.cpp)
         target_include_directories(xrfg_version_proxy_tests PRIVATE include)
-        target_link_libraries(xrfg_version_proxy_tests PRIVATE xrfg_proxy_bootstrap)
+        target_link_libraries(xrfg_version_proxy_tests PRIVATE xrfg_proxy_bootstrap dxgi)
         target_compile_features(xrfg_version_proxy_tests PRIVATE cxx_std_20)
         if(MSVC)
             target_compile_options(xrfg_version_proxy_tests PRIVATE /W4 /permissive- /EHsc)
