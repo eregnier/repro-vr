@@ -45,7 +45,9 @@ int main() {
         out << "MOCK_REPROVR_LAYER_DLL_BYTES";
     }
 
+    fs::path manifestPath = dummyTarget / kLayerManifest;
     Require(!installed(dummyTarget), "Target must not be reported as installed before installation");
+    Require(!is_implicit_layer_registered(manifestPath), "Manifest must not be registered before install");
 
     // 3. Test install()
     std::wstring err;
@@ -54,7 +56,6 @@ int main() {
     Require(installed(dummyTarget), "installed() must report true after install");
 
     // Check manifest JSON
-    fs::path manifestPath = dummyTarget / kLayerManifest;
     Require(fs::exists(manifestPath), "Manifest JSON must exist in target game folder");
     {
         std::ifstream mf(manifestPath);
@@ -65,9 +66,13 @@ int main() {
                 "Manifest must contain api_layer definition");
     }
 
+    // Check OpenXR Implicit Layer registry registration
+    Require(is_implicit_layer_registered(manifestPath),
+            "Manifest must be registered in OpenXR Implicit ApiLayers registry after install");
+
     // Check INI existence
     Require(fs::exists(dummyTarget / L"repro_vr.ini"), "repro_vr.ini must exist in target folder");
-    std::cout << "[PASS] install() verified with DLL, manifest JSON, and repro_vr.ini" << std::endl;
+    std::cout << "[PASS] install() verified with DLL, manifest JSON, registry key and repro_vr.ini" << std::endl;
 
     // 4. Test uninstall()
     bool uninstallOk = uninstall(dummyTarget, &err);
@@ -75,8 +80,19 @@ int main() {
     Require(!installed(dummyTarget), "Target must not be reported as installed after uninstall");
     Require(!fs::exists(dummyTarget / kLayerDll), "DLL must be removed after uninstall");
     Require(!fs::exists(manifestPath), "Manifest JSON must be removed after uninstall");
+    Require(!is_implicit_layer_registered(manifestPath),
+            "Manifest must be removed from OpenXR Implicit ApiLayers registry after uninstall");
     Require(fs::exists(dummyTarget / L"repro_vr.ini"), "repro_vr.ini must be preserved after uninstall");
-    std::cout << "[PASS] uninstall() verified: layer files cleaned, config preserved" << std::endl;
+    std::cout << "[PASS] uninstall() verified: layer files cleaned, registry cleaned, config preserved" << std::endl;
+
+    // 5. Test idempotency of registry registration helpers
+    Require(unregister_implicit_layer(manifestPath), "Unregistering again must be safe and idempotent");
+    Require(!is_implicit_layer_registered(manifestPath), "Must remain unregistered");
+    Require(register_implicit_layer(manifestPath), "Standalone register_implicit_layer must succeed");
+    Require(is_implicit_layer_registered(manifestPath), "Standalone registration must be detected");
+    Require(unregister_implicit_layer(manifestPath), "Standalone cleanup must succeed");
+    Require(!is_implicit_layer_registered(manifestPath), "Cleaned up manifest must not be registered");
+    std::cout << "[PASS] OpenXR registry helper idempotency and lifecycle verified" << std::endl;
 
     // 5. Test discover_steam_games()
     auto discovered = discover_steam_games();

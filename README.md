@@ -1,7 +1,7 @@
 # ReproVR — Universal 6-DOF Frame Synthesis & Forward Reprojection OpenXR Layer
 
 [![License: LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg)](LICENSE)
-[![Release: v1.0.1](https://img.shields.io/badge/Release-v1.0.1--butter--smooth-green.svg)](https://github.com/eregnier/repro-vr/releases/tag/v1.0.1)
+[![Release: v1.0.3](https://img.shields.io/badge/Release-v1.0.3--butter--smooth-green.svg)](https://github.com/eregnier/repro-vr/releases/tag/v1.0.3)
 [![Platform: Windows x64](https://img.shields.io/badge/Platform-Windows%20x64-lightgrey.svg)]()
 
 **ReproVR** is a high-performance, non-intrusive OpenXR implicit API layer that provides real-time **2X and 3X stereoscopic frame synthesis** for PC VR games and simulators. 

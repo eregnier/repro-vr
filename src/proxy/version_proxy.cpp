@@ -83,30 +83,38 @@ bool register_explicit_layer_manifest_in_hive(
             _wcsnicmp(value_name.data(), temp_dir.data(), temp_dir.size()) == 0) {
             return true;
         }
-        HKEY key = nullptr;
-        const LSTATUS create_status = RegCreateKeyExW(
-            root_hive,
-            L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Explicit",
-            0,
-            nullptr,
-            REG_OPTION_NON_VOLATILE,
-            KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY,
-            nullptr,
-            &key,
-            nullptr);
-        if (create_status != ERROR_SUCCESS || key == nullptr) {
-            return false;
-        }
+
+        bool ok = false;
         constexpr DWORD enabled_value = 0;
-        const LSTATUS set_status = RegSetValueExW(
-            key,
-            value_name.c_str(),
-            0,
-            REG_DWORD,
-            reinterpret_cast<const BYTE*>(&enabled_value),
-            sizeof(enabled_value));
-        RegCloseKey(key);
-        return set_status == ERROR_SUCCESS;
+        for (const wchar_t* subkey : {
+                 L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit",
+                 L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Explicit"}) {
+            HKEY key = nullptr;
+            const LSTATUS create_status = RegCreateKeyExW(
+                root_hive,
+                subkey,
+                0,
+                nullptr,
+                REG_OPTION_NON_VOLATILE,
+                KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY,
+                nullptr,
+                &key,
+                nullptr);
+            if (create_status == ERROR_SUCCESS && key != nullptr) {
+                const LSTATUS set_status = RegSetValueExW(
+                    key,
+                    value_name.c_str(),
+                    0,
+                    REG_DWORD,
+                    reinterpret_cast<const BYTE*>(&enabled_value),
+                    sizeof(enabled_value));
+                RegCloseKey(key);
+                if (set_status == ERROR_SUCCESS) {
+                    ok = true;
+                }
+            }
+        }
+        return ok;
     } catch (...) {
         return false;
     }
@@ -116,20 +124,23 @@ void unregister_explicit_layer_manifest_in_hive(
     HKEY root_hive,
     const std::filesystem::path& manifest_path) noexcept {
     try {
-        HKEY key = nullptr;
-        if (RegOpenKeyExW(
-                root_hive,
-                L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Explicit",
-                0,
-                KEY_SET_VALUE | KEY_WOW64_64KEY,
-                &key) != ERROR_SUCCESS ||
-            key == nullptr) {
-            return;
-        }
         const std::wstring value_name =
             std::filesystem::absolute(manifest_path).lexically_normal().wstring();
-        static_cast<void>(RegDeleteValueW(key, value_name.c_str()));
-        RegCloseKey(key);
+        for (const wchar_t* subkey : {
+                 L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit",
+                 L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Explicit"}) {
+            HKEY key = nullptr;
+            if (RegOpenKeyExW(
+                    root_hive,
+                    subkey,
+                    0,
+                    KEY_SET_VALUE | KEY_WOW64_64KEY,
+                    &key) == ERROR_SUCCESS &&
+                key != nullptr) {
+                static_cast<void>(RegDeleteValueW(key, value_name.c_str()));
+                RegCloseKey(key);
+            }
+        }
     } catch (...) {
     }
 }

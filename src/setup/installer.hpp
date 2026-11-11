@@ -42,6 +42,13 @@ bool install(const std::filesystem::path& game_directory,
 bool uninstall(const std::filesystem::path& game_directory,
                std::wstring* error);
 
+// OpenXR Implicit Layer registry management
+bool register_implicit_layer(const std::filesystem::path& manifest_path,
+                             std::wstring* error = nullptr);
+bool unregister_implicit_layer(const std::filesystem::path& manifest_path,
+                               std::wstring* error = nullptr);
+bool is_implicit_layer_registered(const std::filesystem::path& manifest_path);
+
 // The folder this executable lives in: where the layer binaries are shipped.
 std::filesystem::path source_directory();
 

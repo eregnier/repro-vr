@@ -335,6 +335,131 @@ std::filesystem::path source_directory() {
     return std::filesystem::path(path).parent_path();
 }
 
+bool register_implicit_layer(const std::filesystem::path& manifest_path,
+                             std::wstring* error) {
+    std::error_code ec;
+    const std::wstring abs_path =
+        std::filesystem::absolute(manifest_path, ec).lexically_normal().wstring();
+    if (abs_path.empty()) {
+        if (error) *error = L"Invalid manifest path";
+        return false;
+    }
+
+    constexpr DWORD enabled_value = 0;
+    bool ok_hkcu = false;
+
+    // 1. Register in HKCU Implicit (loaded automatically by OpenXR runtimes)
+    HKEY key = nullptr;
+    LSTATUS status = RegCreateKeyExW(
+        HKEY_CURRENT_USER,
+        L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit",
+        0, nullptr, REG_OPTION_NON_VOLATILE,
+        KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY,
+        nullptr, &key, nullptr);
+    if (status == ERROR_SUCCESS && key != nullptr) {
+        status = RegSetValueExW(
+            key,
+            abs_path.c_str(),
+            0,
+            REG_DWORD,
+            reinterpret_cast<const BYTE*>(&enabled_value),
+            sizeof(enabled_value));
+        ok_hkcu = (status == ERROR_SUCCESS);
+        RegCloseKey(key);
+    }
+
+    // 2. Also register in HKCU Explicit for full compatibility
+    key = nullptr;
+    status = RegCreateKeyExW(
+        HKEY_CURRENT_USER,
+        L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Explicit",
+        0, nullptr, REG_OPTION_NON_VOLATILE,
+        KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY,
+        nullptr, &key, nullptr);
+    if (status == ERROR_SUCCESS && key != nullptr) {
+        RegSetValueExW(
+            key,
+            abs_path.c_str(),
+            0,
+            REG_DWORD,
+            reinterpret_cast<const BYTE*>(&enabled_value),
+            sizeof(enabled_value));
+        RegCloseKey(key);
+    }
+
+    // 3. Register in HKLM Implicit & Explicit (best-effort if elevated)
+    for (const wchar_t* subkey : {
+             L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit",
+             L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Explicit"}) {
+        key = nullptr;
+        status = RegCreateKeyExW(
+            HKEY_LOCAL_MACHINE,
+            subkey,
+            0, nullptr, REG_OPTION_NON_VOLATILE,
+            KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY,
+            nullptr, &key, nullptr);
+        if (status == ERROR_SUCCESS && key != nullptr) {
+            RegSetValueExW(
+                key,
+                abs_path.c_str(),
+                0,
+                REG_DWORD,
+                reinterpret_cast<const BYTE*>(&enabled_value),
+                sizeof(enabled_value));
+            RegCloseKey(key);
+        }
+    }
+
+    if (!ok_hkcu && error) {
+        *error = L"Failed to register OpenXR implicit layer in HKCU registry";
+    }
+    return ok_hkcu;
+}
+
+bool unregister_implicit_layer(const std::filesystem::path& manifest_path,
+                               std::wstring* error) {
+    (void)error;
+    std::error_code ec;
+    const std::wstring abs_path =
+        std::filesystem::absolute(manifest_path, ec).lexically_normal().wstring();
+    if (abs_path.empty()) return true;
+
+    for (HKEY root : {HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE}) {
+        for (const wchar_t* subkey : {
+                 L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit",
+                 L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Explicit"}) {
+            HKEY key = nullptr;
+            if (RegOpenKeyExW(root, subkey, 0, KEY_SET_VALUE | KEY_WOW64_64KEY, &key) == ERROR_SUCCESS && key != nullptr) {
+                RegDeleteValueW(key, abs_path.c_str());
+                RegCloseKey(key);
+            }
+        }
+    }
+    return true;
+}
+
+bool is_implicit_layer_registered(const std::filesystem::path& manifest_path) {
+    std::error_code ec;
+    const std::wstring abs_path =
+        std::filesystem::absolute(manifest_path, ec).lexically_normal().wstring();
+    if (abs_path.empty()) return false;
+
+    for (HKEY root : {HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE}) {
+        HKEY key = nullptr;
+        if (RegOpenKeyExW(root, L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit", 0, KEY_QUERY_VALUE | KEY_WOW64_64KEY, &key) == ERROR_SUCCESS && key != nullptr) {
+            DWORD type = 0;
+            DWORD val = 0;
+            DWORD size = sizeof(val);
+            const LSTATUS st = RegQueryValueExW(key, abs_path.c_str(), nullptr, &type, reinterpret_cast<LPBYTE>(&val), &size);
+            RegCloseKey(key);
+            if (st == ERROR_SUCCESS && type == REG_DWORD && val == 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool installed(const std::filesystem::path& directory) {
     std::error_code code;
     if (directory.empty()) return false;
@@ -353,6 +478,9 @@ bool install(const std::filesystem::path& game_directory,
     const auto dll_target = game_directory / kLayerDll;
     if (!copy_if_needed(source / kLayerDll, dll_target, error)) return false;
     if (!write_manifest(game_directory, dll_target, error)) return false;
+
+    // Register OpenXR manifest in HKCU/HKLM ApiLayers\Implicit so runtimes discover it universally
+    register_implicit_layer(game_directory / kLayerManifest, error);
 
     // Install proxy DLL if present in source bundle, with fallback candidate selection
     std::filesystem::path source_proxy;
@@ -425,6 +553,10 @@ bool install(const std::filesystem::path& game_directory,
 bool uninstall(const std::filesystem::path& game_directory, std::wstring* error) {
     std::error_code code;
     if (game_directory.empty()) return false;
+
+    // Unregister OpenXR manifest from HKCU/HKLM registry hives
+    unregister_implicit_layer(game_directory / kLayerManifest);
+
     for (const wchar_t* name : {kLayerDll, kLayerManifest}) {
         std::filesystem::remove(game_directory / name, code);
         if (code) {
