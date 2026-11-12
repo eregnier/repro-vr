@@ -6,9 +6,9 @@
 
 **ReproVR** is a high-performance, non-intrusive OpenXR implicit API layer that provides real-time **2X and 3X stereoscopic frame synthesis** for PC VR games and simulators. 
 
-Engineered as a clean-room implementation inspired by modern forward reprojection principles (such as SpaceWarp architectures), it synthesizes smooth intermediate frames directly on the GPU using hardware optical flow and motion vectors. 
+Engineered as a clean-room implementation inspired by modern forward reprojection principles (such as SpaceWarp architectures), it synthesizes smooth intermediate frames directly on the GPU using high-precision optical flow and reprojection techniques.
 
-> In terms of motion smoothness and visual comfort, the result feels — to my eyes — every bit as good as Meta's native reprojection, but completely **PCVR and runtime agnostic** (SteamVR, Virtual Desktop, Pimax Play, Meta Link).
+> In terms of motion smoothness and visual comfort, the result feels — to my eyes — every bit as good as Meta's native reprojection, but completely **PCVR and runtime agnostic** (SteamVR, Virtual Desktop, Meta Link, etc.).
 
 ---
 
@@ -17,9 +17,9 @@ Engineered as a clean-room implementation inspired by modern forward reprojectio
 Understanding the difference between **ReproVR (Forward Reprojection)** and traditional flat-screen Frame Generation (such as DLSS 3 / FSR 3 Frame Gen) is essential:
 
 * **The Huge Advantage: Near-Zero Latency & Instant Response**  
-  Traditional frame generation adds 1 to 2 frames of input lag because it must hold back frames to interpolate between them. In VR, added latency can immediately induce motion sickness. ReproVR projects strictly *forward* in time and binds the synthetic frame directly to your physical head pose at the scanout instant. Controller inputs and head tracking feel completely instantaneous.
+  Traditional frame generation adds 1 to 2 frames of input lag because it must hold back frames to interpolate between them. In VR, added latency can immediately induce motion sickness. ReproVR predicts and synthesizes frames without that penalty.
 * **The Tradeoff: Occasional Reprojection Edge Warping**  
-  Because forward reprojection predicts forward rather than interpolating between two known images, some minor reprojection artifacts may be visible in edge cases — specifically around thin, high-contrast geometry (antennae, chain-link fences, fine foliage) during rapid head or camera rotation. While our built-in **Luma Shield** protects text and HUD elements from warping, this is the classic VR tradeoff: **immediate latency and doubled smoothness in exchange for minor edge warping under fast motion**.
+  Because forward reprojection predicts forward rather than interpolating between two known images, some minor reprojection artifacts may be visible in edge cases — specifically around thin, high-contrast geometry.
 
 ---
 
@@ -28,16 +28,16 @@ Understanding the difference between **ReproVR (Forward Reprojection)** and trad
 * **Single-Source Forward Reprojection**:
   * Warps strictly the latest rendered frame forward in time, eliminating the temporal ghosting, edge doubling, and UI trailing typically caused by legacy 50/50 crossfade blending.
 * **Temporal Pose Continuity (Zero-Jitter Tracking)**:
-  * Synthetic frame poses remain strictly aligned to the active headset tracking pose (`alpha = 1.0F`), leaving fine micro-rotation compensation to the runtime's Asynchronous Timewarp (ATW). This eliminates back-and-forth oscillation during rapid head turns.
+  * Synthetic frame poses remain strictly aligned to the active headset tracking pose (`alpha = 1.0F`), leaving fine micro-rotation compensation to the runtime's Asynchronous Timewarp (ATW). This preserves stability and reduces post-processing artifacts.
 * **Luma Shield UI & Text Protection**:
   * An automated luminance guard detects sharp, high-contrast HUD elements and text against dark moving backgrounds, preventing optical flow block bleeding and keeping in-game text crisp and readable.
 * **High-Precision Frame Pacing**:
-  * Hardware-timed release throttling locks your game engine to exact fractions of your headset refresh rate (e.g. 45 FPS @ 90 Hz, 60 FPS @ 120 Hz, 40 FPS @ 120 Hz for 3X), providing a consistent, stutter-free cadence.
+  * Hardware-timed release throttling locks your game engine to exact fractions of your headset refresh rate (e.g. 45 FPS @ 90 Hz, 60 FPS @ 120 Hz, 40 FPS @ 120 Hz for 3X), providing a consistent, low-judder visual experience.
 * **DLSS Swapper-Style Setup Utility (`reprovr_setup.exe`)**:
   * Portable, lightweight Direct2D management app.
   * Automatically discovers installed VR games across your Steam libraries.
   * One-click **Install** and **Uninstall** per game.
-  * **Smart Proxy Auto-Fallback**: If `version.dll` already exists in the game folder (e.g. UEVR, ReShade), ReproVR automatically selects the next available proxy candidate (`winmm.dll`, then `dxgi.dll`) and forwards all system calls seamlessly. Both mods run concurrently with zero conflict.
+  * **Smart Proxy Auto-Fallback**: If `version.dll` already exists in the game folder (e.g. UEVR, ReShade), ReproVR automatically selects the next available proxy candidate (`winmm.dll`, then `dxgi.dll`, etc.).
   * Real-time settings adjustment with hot-reloading while the game is running.
 * **Pure Clean-Room Implementation**:
   * Zero proprietary or copyrighted binary dependencies. Pure C++20 and HLSL shaders.
@@ -55,7 +55,7 @@ Understanding the difference between **ReproVR (Forward Reprojection)** and trad
   * Meta Quest Link / AirLink.
 * **Motion Vector & Flow Backends**:
   * **NVIDIA OFA (Optical Flow Accelerator)**: Turing, Ampere, Ada Lovelace, Blackwell GPUs (extensively tested and verified).
-  * **AMD FidelityFX / Optical Flow**: Universal fallback for all modern GPUs (*Note: fully implemented via FidelityFX SDK v1.1.4, but not extensively tested in-game on real AMD hardware — feedback is welcome!*).
+  * **AMD FidelityFX / Optical Flow**: Universal fallback for all modern GPUs (*Note: fully implemented via FidelityFX SDK v1.1.4, but not extensively tested in-game on real AMD hardware — feedback welcome*).
   * **DLSS Game Motion Vectors**: Automatic extraction when available in supported titles.
 
 ---
@@ -84,7 +84,7 @@ Start your game normally! The layer automatically activates when the game initia
 
 If you are playing Unreal Engine games modded via **UEVR** on **Virtual Desktop**:
 * Open the in-game UEVR menu and **DISABLE / UNCHECK the "Virtual Desktop fix"** setting.
-* **Why**: ReproVR manages frame pacing and swapchain submission natively. Keeping the UEVR "Virtual Desktop fix" enabled conflicts with presentation timing, creating severe frame pacing judder and desynchronization. Disabling it ensures a butter-smooth, stutter-free experience.
+* **Why**: ReproVR manages frame pacing and swapchain submission natively. Keeping the UEVR "Virtual Desktop fix" enabled conflicts with presentation timing, creating severe frame pacing judder and visual instability.
 
 ---
 
@@ -97,7 +97,7 @@ Settings can be changed before launching or **on the fly while playing** via `re
 | `enabled` | `on` / `off` | Master toggle for frame synthesis. |
 | `backend` | `FidelityFX` / `NVIDIA OFA` | Optical flow calculation engine. |
 | `triple_frame_gen` | `2 images (2X)` / `3 images (3X)` | 2X synthesizes 1 frame per real frame; 3X synthesizes 2 frames. |
-| `target_app_fps` | `auto`, `45`, `60`, `72`, `90` | **Base engine FPS** (what the game computes, NOT the headset display rate). E.g. 45 FPS base yields 90 Hz in the headset with 2X, or 40 FPS base yields 120 Hz with 3X. `auto` automatically locks the engine to `HMD_Hz / Multiplier`. |
+| `target_app_fps` | `auto`, `45`, `60`, `72`, `90` | **Base engine FPS** (what the game computes, NOT the headset display rate). E.g. 45 FPS base yields 90 Hz in the headset with 2X, or 40 FPS base for 3X at 120 Hz. |
 | `stereo_input_mode` | `auto`, `native`, `AER` | Native stereo vs Alternate Eye Rendering (AER). |
 | `overlay` | `off`, `TL`, `TR`, `BL`, `BR` | On-screen HUD displaying real vs synthesized frame rates. |
 
@@ -105,18 +105,27 @@ Settings can be changed before launching or **on the fly while playing** via `re
 
 ### 📢 Honest Performance Expectations
 
-* **Perceptual Smoothness**: In demanding titles (Microsoft Flight Simulator, DCS World, heavily modded Skyrim VR, Subnautica, UEVR titles), synthesizing frames doubles effective motion smoothness with virtually zero ghosting on the "butter-smooth" pipeline.
-* **Inference Overhead**: Hardware optical flow execution consumes ~1.0–2.0 ms of GPU time. For best results, configure your game so that your GPU has ~15–20% headroom at the halved base frame rate.
+* **Perceptual Smoothness**: In demanding titles (Microsoft Flight Simulator, DCS World, heavily modded Skyrim VR, Subnautica, UEVR titles), synthesizing frames doubles effective motion smoothness and can make the experience feel far more comfortable.
+* **Inference Overhead**: Hardware optical flow execution consumes ~1.0–2.0 ms of GPU time. For best results, configure your game so that your GPU has ~15–20% headroom at the halved base frame-rate target.
 * **Hardware Testing**: Thoroughly tested and tuned on NVIDIA RTX cards. The AMD FidelityFX fallback path is fully coded in the pipeline but has not been tested on real AMD hardware yet.
 
 ---
 
 ### 🛡️ Safety Note: VirusTotal Verification
 
-We believe in complete transparency. Whether downloading ReproVR from our releases or any third-party modding repository, we always encourage users to submit the binaries to [VirusTotal.com](https://www.virustotal.com/) for complete peace of mind.
+We believe in complete transparency. Whether downloading ReproVR from our releases or any third-party modding repository, we always encourage users to submit the binaries to [VirusTotal.com](https://www.virustotal.com/) for verification.
+
+---
+
+### 💝 Support
+
+If you like ReproVR and it helps you, consider supporting the project with a donation.
+
+[![paypal](https://www.paypalobjects.com/en_US/i/btn/btn_donate_LG.gif)](https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=UV5GR9QWPAEMS)
 
 ---
 
 ### 📜 License
 
 ReproVR is licensed under the [GNU Lesser General Public License v3.0](LICENSE).
+
