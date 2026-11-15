@@ -84,10 +84,27 @@ bool register_explicit_layer_manifest_in_hive(
             return true;
         }
 
+        // Per-game only. An Explicit entry loads the layer ONLY in a process that names it
+        // in XR_ENABLE_API_LAYERS (set by this proxy, inside the game process). It is still
+        // needed: an elevated game's loader ignores XR_API_LAYER_PATH and reads only the
+        // Explicit registry (measured with RealVR64.dll, see WIP.md / commit 760bcc5).
+        // NEVER Implicit: that loads ReproVR into every OpenXR app on the PC. Remove any
+        // Implicit entry for this manifest left by older builds (commit 36c2f92).
+        {
+            HKEY implicit_key = nullptr;
+            if (RegOpenKeyExW(root_hive,
+                              L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit", 0,
+                              KEY_SET_VALUE | KEY_WOW64_64KEY,
+                              &implicit_key) == ERROR_SUCCESS &&
+                implicit_key != nullptr) {
+                static_cast<void>(RegDeleteValueW(implicit_key, value_name.c_str()));
+                RegCloseKey(implicit_key);
+            }
+        }
+
         bool ok = false;
         constexpr DWORD enabled_value = 0;
         for (const wchar_t* subkey : {
-                 L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit",
                  L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Explicit"}) {
             HKEY key = nullptr;
             const LSTATUS create_status = RegCreateKeyExW(

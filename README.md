@@ -1,10 +1,10 @@
 # ReproVR — Universal 6-DOF Frame Synthesis & Forward Reprojection OpenXR Layer
 
 [![License: LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg)](LICENSE)
-[![Release: v1.0.3](https://img.shields.io/badge/Release-v1.0.3--butter--smooth-green.svg)](https://github.com/eregnier/repro-vr/releases/tag/v1.0.3)
+[![Release: v1.0.4](https://img.shields.io/badge/Release-v1.0.4--butter--smooth-green.svg)](https://github.com/eregnier/repro-vr/releases/tag/v1.0.4)
 [![Platform: Windows x64](https://img.shields.io/badge/Platform-Windows%20x64-lightgrey.svg)]()
 
-**ReproVR** is a high-performance, non-intrusive OpenXR implicit API layer that provides real-time **2X and 3X stereoscopic frame synthesis** for PC VR games and simulators. 
+**ReproVR** is a high-performance, non-intrusive OpenXR API layer, enabled **only in the games you choose**, that provides real-time **2X and 3X stereoscopic frame synthesis** for PC VR games and simulators. 
 
 Engineered as a clean-room implementation inspired by modern forward reprojection principles (such as SpaceWarp architectures), it synthesizes smooth intermediate frames directly on the GPU using high-precision optical flow and reprojection techniques.
 
@@ -37,7 +37,7 @@ Understanding the difference between **ReproVR (Forward Reprojection)** and trad
   * Portable, lightweight Direct2D management app.
   * Automatically discovers installed VR games across your Steam libraries.
   * One-click **Install** and **Uninstall** per game.
-  * **Smart Proxy Auto-Fallback**: If `version.dll` already exists in the game folder (e.g. UEVR, ReShade), ReproVR automatically selects the next available proxy candidate (`winmm.dll`, then `dxgi.dll`, etc.).
+  * **Smart Proxy Choice**: ReproVR uses a loader DLL name the game really loads (`version.dll`, `winmm.dll` or `dxgi.dll`). If one of them already belongs to another mod (e.g. UEVR, ReShade), it is never overwritten: ReproVR picks another name and both mods run side by side.
   * Real-time settings adjustment with hot-reloading while the game is running.
 * **Pure Clean-Room Implementation**:
   * Zero proprietary or copyrighted binary dependencies. Pure C++20 and HLSL shaders.
@@ -63,7 +63,7 @@ Understanding the difference between **ReproVR (Forward Reprojection)** and trad
 ### 🚀 Getting Started
 
 #### 1. Download & Extract
-Download **`ReproVR-v1.0.0-butter-smooth.zip`** from the [GitHub Releases](https://github.com/eregnier/repro-vr/releases/tag/v1.0.0). Extract the folder anywhere you like.
+Download **`ReproVR-v1.0.4-butter-smooth.zip`** from the [GitHub Releases](https://github.com/eregnier/repro-vr/releases/tag/v1.0.4). Extract the folder anywhere you like.
 
 #### 2. Run the Manager
 Launch **`reprovr_setup.exe`**:
@@ -72,11 +72,18 @@ Launch **`reprovr_setup.exe`**:
 
 #### 3. Install
 * Select the game from the list and click **Install**.
-* ReproVR will place the implicit layer DLL and manifest beside the game binary.
+* ReproVR places its files beside the game binary. It is active in that game only: other VR games are never affected.
+* If the tool shows an information message after installing, ReproVR may not start on its own in that game.
 * You can adjust settings (2X / 3X, pacing, overlay, optical flow preset) directly in the GUI.
 
 #### 4. Play
 Start your game normally! The layer automatically activates when the game initializes OpenXR.
+
+#### Upgrading from v1.0.3
+v1.0.3 turned ReproVR on in **every** OpenXR game, not only the ones you installed it in. Just open the new `reprovr_setup.exe`: it fixes this automatically and keeps your games working.
+* Windows may ask for permission once (the old setting was saved for all users).
+* Close your VR games first.
+* A backup is kept. To undo the fix, run `reprovr_setup.exe --restore-legacy`.
 
 ---
 

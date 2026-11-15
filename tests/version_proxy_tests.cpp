@@ -100,6 +100,68 @@ int main(int argc, char** argv) {
         GetEnvironmentVariableW(L"XR_ENABLE_API_LAYERS", enable_layers_env, 1024) > 0,
         "XR_ENABLE_API_LAYERS must be set in process environment");
 
+    // Test 2b: per-game only. Out of %TEMP% (temp manifests are never registered), the
+    // bootstrap must register Explicit only, and remove an Implicit entry left by an
+    // older build. Touches only this test's own value names, cleaned up below.
+    {
+        const auto reg_game =
+            std::filesystem::absolute("repro_vr_proxy_registry_test") / "Win64";
+        std::filesystem::remove_all(reg_game.parent_path(), ec);
+        std::filesystem::create_directories(reg_game);
+        std::filesystem::copy_file(
+            target_game / "XR_APILAYER_XRFrameBridge_diagnostic.dll",
+            reg_game / "XR_APILAYER_XRFrameBridge_diagnostic.dll",
+            std::filesystem::copy_options::overwrite_existing);
+        const std::wstring manifest =
+            std::filesystem::absolute(reg_game / "XR_APILAYER_XRFrameBridge_diagnostic.json")
+                .lexically_normal()
+                .wstring();
+        const wchar_t* implicit_key = L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit";
+        const wchar_t* explicit_key = L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Explicit";
+        auto has_value = [&](const wchar_t* subkey) {
+            HKEY k = nullptr;
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, subkey, 0, KEY_QUERY_VALUE | KEY_WOW64_64KEY,
+                              &k) != ERROR_SUCCESS) {
+                return false;
+            }
+            const bool found = RegQueryValueExW(k, manifest.c_str(), nullptr, nullptr, nullptr,
+                                                nullptr) == ERROR_SUCCESS;
+            RegCloseKey(k);
+            return found;
+        };
+        auto set_value = [&](const wchar_t* subkey) {
+            HKEY k = nullptr;
+            RegCreateKeyExW(HKEY_CURRENT_USER, subkey, 0, nullptr, 0,
+                            KEY_SET_VALUE | KEY_WOW64_64KEY, nullptr, &k, nullptr);
+            const DWORD zero = 0;
+            RegSetValueExW(k, manifest.c_str(), 0, REG_DWORD,
+                           reinterpret_cast<const BYTE*>(&zero), sizeof(zero));
+            RegCloseKey(k);
+        };
+        auto delete_value = [&](const wchar_t* subkey) {
+            HKEY k = nullptr;
+            if (RegOpenKeyExW(HKEY_CURRENT_USER, subkey, 0, KEY_SET_VALUE | KEY_WOW64_64KEY,
+                              &k) == ERROR_SUCCESS) {
+                RegDeleteValueW(k, manifest.c_str());
+                RegCloseKey(k);
+            }
+        };
+
+        set_value(implicit_key);  // what an older build left behind
+        require(has_value(implicit_key), "fixture: legacy Implicit entry must exist");
+        const auto reg_boot = xrfg::bootstrap_repro_vr_from_directory(reg_game);
+        require(reg_boot.manifest_ready, "bootstrap must write the manifest (registry test)");
+        require(!has_value(implicit_key),
+                "proxy must NEVER leave a global Implicit entry (per-game only)");
+        require(has_value(explicit_key),
+                "proxy must register Explicit (elevated loaders ignore XR_API_LAYER_PATH)");
+
+        delete_value(explicit_key);
+        delete_value(implicit_key);
+        std::filesystem::remove_all(reg_game.parent_path(), ec);
+        std::cout << "[PASS] proxy registers Explicit only and cleans legacy Implicit\n";
+    }
+
     // Uninstall Test 1:
     require(
         xrfg::remove_dropin_from_game_directory(target_game),

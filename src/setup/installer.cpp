@@ -3,6 +3,9 @@
 #include <windows.h>
 #include <shlobj.h>
 
+#include <algorithm>
+#include <cwchar>
+#include <cwctype>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -111,6 +114,211 @@ bool write_manifest(const std::filesystem::path& game_directory,
     for (const wchar_t ch : json) narrow += static_cast<char>(ch);
     out.write(narrow.data(), static_cast<std::streamsize>(narrow.size()));
     return out.good();
+}
+
+// --- Which proxy DLL does the game really load? ------------------------------
+// The proxy only works if the game loads a DLL of that name from its own folder.
+// Measured 2026-11-15 on real installs: SkyrimVR.exe imports dxgi/winmm but NOT
+// version.dll, so the old "first free name" choice (version.dll) never loaded there.
+
+// Lower-cased names of the DLLs a PE file imports (normal + delay-load). Read-only
+// mapping, every offset bounds-checked: a damaged or foreign file yields {}.
+std::vector<std::string> pe_imported_dlls(const std::filesystem::path& file) {
+    std::vector<std::string> out;
+    HANDLE f = CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE |
+                           FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                           nullptr);
+    if (f == INVALID_HANDLE_VALUE) return out;
+    LARGE_INTEGER size{};
+    GetFileSizeEx(f, &size);
+    HANDLE m = size.QuadPart > 0 ? CreateFileMappingW(f, nullptr, PAGE_READONLY, 0, 0, nullptr)
+                                 : nullptr;
+    const auto* base = m ? static_cast<const unsigned char*>(
+                               MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0))
+                         : nullptr;
+    const size_t n = static_cast<size_t>(size.QuadPart);
+    auto ok = [&](size_t off, size_t len) { return off <= n && len <= n - off; };
+    auto u16 = [&](size_t off) { return *reinterpret_cast<const WORD*>(base + off); };
+    auto u32 = [&](size_t off) { return *reinterpret_cast<const DWORD*>(base + off); };
+
+    if (base != nullptr && ok(0, 0x40) && u16(0) == IMAGE_DOS_SIGNATURE) {
+        const size_t nt = u32(0x3C);
+        if (ok(nt, 24) && u32(nt) == IMAGE_NT_SIGNATURE) {
+            const size_t fh = nt + 4;
+            const WORD sections = u16(fh + 2);
+            const WORD opt_size = u16(fh + 16);
+            const size_t opt = fh + 20;
+            if (ok(opt, 2)) {
+                const WORD magic = u16(opt);
+                const bool pe64 = magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC;
+                const size_t dirs = opt + (pe64 ? 112 : 96);
+                const unsigned long long image_base =
+                    pe64 ? (ok(opt + 24, 8) ? *reinterpret_cast<const ULONGLONG*>(base + opt + 24) : 0)
+                         : (ok(opt + 28, 4) ? u32(opt + 28) : 0);
+                const size_t sect = opt + opt_size;
+                auto rva_to_off = [&](DWORD rva, size_t* off) {
+                    for (WORD i = 0; i < sections; ++i) {
+                        const size_t s = sect + static_cast<size_t>(i) * 40;
+                        if (!ok(s, 40)) return false;
+                        const DWORD va = u32(s + 12), vsize = u32(s + 8);
+                        const DWORD raw = u32(s + 20), rsize = u32(s + 16);
+                        const DWORD span = vsize > rsize ? vsize : rsize;
+                        if (rva >= va && rva < va + span) {
+                            *off = static_cast<size_t>(raw) + (rva - va);
+                            return true;
+                        }
+                    }
+                    return false;
+                };
+                auto read_name = [&](DWORD rva) {
+                    size_t off = 0;
+                    std::string s;
+                    if (!rva_to_off(rva, &off)) return s;
+                    while (off < n && base[off] != 0 && s.size() < 260) {
+                        s += static_cast<char>(tolower(base[off++]));
+                    }
+                    return s;
+                };
+                // Import directory (index 1): 20-byte descriptors, Name at +12.
+                if (ok(dirs + 8 * 1, 8)) {
+                    size_t off = 0;
+                    if (u32(dirs + 8) != 0 && rva_to_off(u32(dirs + 8), &off)) {
+                        for (int i = 0; i < 4096 && ok(off, 20); ++i, off += 20) {
+                            const DWORD name = u32(off + 12);
+                            if (name == 0) break;
+                            out.push_back(read_name(name));
+                        }
+                    }
+                }
+                // Delay-load directory (index 13): 32-byte descriptors, name at +4.
+                if (ok(dirs + 8 * 13, 8)) {
+                    size_t off = 0;
+                    if (u32(dirs + 8 * 13) != 0 && rva_to_off(u32(dirs + 8 * 13), &off)) {
+                        for (int i = 0; i < 4096 && ok(off, 32); ++i, off += 32) {
+                            const DWORD attrs = u32(off);
+                            DWORD name = u32(off + 4);
+                            if (name == 0) break;
+                            if ((attrs & 1) == 0 && image_base != 0 && name > image_base) {
+                                name = static_cast<DWORD>(name - image_base);  // old VA-based form
+                            }
+                            out.push_back(read_name(name));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (base != nullptr) UnmapViewOfFile(base);
+    if (m != nullptr) CloseHandle(m);
+    CloseHandle(f);
+    return out;
+}
+
+// Helper executables that ship beside a game but are not the game process. Measured
+// 2026-11-15: in PLAYA VR only UnityCrashHandler64.exe imports version.dll, the game
+// itself (PlayaVR.exe -> UnityPlayer.dll) imports dxgi.dll.
+bool is_helper_executable(const std::wstring& lowered_name) {
+    for (const wchar_t* word : {L"crash", L"unins", L"redist", L"prereq", L"setup",
+                                L"install", L"report", L"eac", L"easyanticheat",
+                                L"be_service", L"launcherhelper"}) {
+        if (lowered_name.find(word) != std::wstring::npos) return true;
+    }
+    return false;
+}
+
+// How strongly the game folder says the game process loads `dll` (lower-case):
+//   3 = a game .exe of the folder imports it directly,
+//   2 = reached through the game's own import chain (exe -> DLL of the folder -> ...),
+//   1 = only some other DLL of the folder imports it (may never be loaded),
+//   0 = nothing does.
+int proxy_load_evidence(const std::filesystem::path& game_directory, const wchar_t* dll) {
+    std::string wanted;
+    for (const wchar_t* p = dll; *p; ++p) wanted += static_cast<char>(towlower(*p));
+
+    // Index the folder once: lower-case file name -> path.
+    std::vector<std::pair<std::string, std::filesystem::path>> files;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(
+             game_directory, std::filesystem::directory_options::skip_permission_denied, ec)) {
+        if (files.size() >= 800) break;
+        std::wstring ext = entry.path().extension().wstring();
+        for (auto& ch : ext) ch = static_cast<wchar_t>(towlower(ch));
+        if (ext != L".exe" && ext != L".dll") continue;
+        std::string name;
+        for (const wchar_t ch : entry.path().filename().wstring()) {
+            name += static_cast<char>(towlower(ch));
+        }
+        if (name == wanted) continue;  // the proxy itself
+        files.emplace_back(name, entry.path());
+    }
+    auto find_file = [&](const std::string& name) -> const std::filesystem::path* {
+        for (const auto& f : files) {
+            if (f.first == name) return &f.second;
+        }
+        return nullptr;
+    };
+
+    int best = 0;
+    // Walk the import graph from every game executable (depth-limited, no revisits).
+    std::vector<std::string> visited;
+    for (const auto& f : files) {
+        const std::wstring wname = f.second.filename().wstring();
+        std::wstring lowered;
+        for (const wchar_t ch : wname) lowered += static_cast<wchar_t>(towlower(ch));
+        if (f.first.size() < 4 || f.first.substr(f.first.size() - 4) != ".exe" ||
+            is_helper_executable(lowered)) {
+            continue;
+        }
+        std::vector<std::pair<std::filesystem::path, int>> queue{{f.second, 0}};
+        while (!queue.empty() && best < 3) {
+            const auto [file, depth] = queue.back();
+            queue.pop_back();
+            for (const auto& imp : pe_imported_dlls(file)) {
+                if (imp == wanted) {
+                    best = std::max(best, depth == 0 ? 3 : 2);
+                    continue;
+                }
+                if (depth >= 3) continue;
+                const auto* next = find_file(imp);
+                if (next == nullptr ||
+                    std::find(visited.begin(), visited.end(), imp) != visited.end()) {
+                    continue;
+                }
+                visited.push_back(imp);
+                queue.emplace_back(*next, depth + 1);
+            }
+        }
+        if (best == 3) return best;
+    }
+    if (best > 0) return best;
+
+    // Weak evidence: some DLL of the folder imports it.
+    for (const auto& f : files) {
+        if (f.first.size() < 4 || f.first.substr(f.first.size() - 4) != ".dll") continue;
+        for (const auto& imp : pe_imported_dlls(f.second)) {
+            if (imp == wanted) return 1;
+        }
+    }
+    return 0;
+}
+
+bool is_our_proxy(const std::filesystem::path& file) {
+    HMODULE probe = LoadLibraryExW(file.c_str(), nullptr, DONT_RESOLVE_DLL_REFERENCES);
+    if (probe == nullptr) return false;
+    const bool ours = GetProcAddress(probe, "ReproVR_GetProxyBootstrapStatus") != nullptr;
+    FreeLibrary(probe);
+    return ours;
+}
+
+std::wstring read_marker_proxy(const std::filesystem::path& marker_path) {
+    std::ifstream mf(marker_path);
+    std::string line;
+    while (std::getline(mf, line)) {
+        if (line.rfind("proxy=", 0) == 0 && line.size() > 6) {
+            return std::wstring(line.begin() + 6, line.end());
+        }
+    }
+    return {};
 }
 
 }  // namespace
@@ -479,8 +687,11 @@ bool install(const std::filesystem::path& game_directory,
     if (!copy_if_needed(source / kLayerDll, dll_target, error)) return false;
     if (!write_manifest(game_directory, dll_target, error)) return false;
 
-    // Register OpenXR manifest in HKCU/HKLM ApiLayers\Implicit so runtimes discover it universally
-    register_implicit_layer(game_directory / kLayerManifest, error);
+    // Per-game activation only: NEVER register the manifest in the global ApiLayers\Implicit
+    // registry (it would load ReproVR into every OpenXR app). The drop-in proxy below sets
+    // XR_API_LAYER_PATH / XR_ENABLE_API_LAYERS inside the game process only. Clean up any
+    // global entry left by older installs for this manifest.
+    unregister_implicit_layer(game_directory / kLayerManifest);
 
     // Install proxy DLL if present in source bundle, with fallback candidate selection
     std::filesystem::path source_proxy;
@@ -492,36 +703,27 @@ bool install(const std::filesystem::path& game_directory,
     }
 
     if (!source_proxy.empty()) {
-        std::wstring chosen_proxy;
         const auto marker_path = game_directory / kInstallMarkerName;
-        if (std::filesystem::exists(marker_path, code) && !code) {
-            std::ifstream mf(marker_path);
-            std::string line;
-            while (std::getline(mf, line)) {
-                if (line.rfind("proxy=", 0) == 0 && line.size() > 6) {
-                    chosen_proxy = std::wstring(line.begin() + 6, line.end());
-                    break;
-                }
-            }
-        }
+        const std::wstring previous = read_marker_proxy(marker_path);
 
-        if (chosen_proxy.empty()) {
-            for (const wchar_t* cand : kProxyCandidates) {
-                const auto cand_path = game_directory / cand;
-                if (!std::filesystem::exists(cand_path, code)) {
-                    chosen_proxy = cand;
-                    break;
-                }
-                // Check if existing file is our own proxy
-                HMODULE hProbe = LoadLibraryExW(cand_path.c_str(), nullptr, DONT_RESOLVE_DLL_REFERENCES);
-                if (hProbe != nullptr) {
-                    const bool is_ours = GetProcAddress(hProbe, "ReproVR_GetProxyBootstrapStatus") != nullptr;
-                    FreeLibrary(hProbe);
-                    if (is_ours) {
-                        chosen_proxy = cand;
-                        break;
-                    }
-                }
+        // A name is usable if it is free, or already holds our own proxy (never
+        // overwrite a foreign version.dll / dxgi.dll from UEVR, ReShade, Cheeky...).
+        auto usable = [&](const wchar_t* cand) {
+            const auto p = game_directory / cand;
+            return !std::filesystem::exists(p, code) || is_our_proxy(p);
+        };
+        // Prefer the name the game really loads; keep the previous choice when it is
+        // as good as any other, so a re-install does not move files around.
+        std::wstring chosen_proxy;
+        int best = -1;
+        for (const wchar_t* cand : kProxyCandidates) {
+            if (!usable(cand)) continue;
+            int score = proxy_load_evidence(game_directory, cand);
+            if (previous == cand) score = score * 2 + 1;  // tie-break in favour of the existing one
+            else score = score * 2;
+            if (score > best) {
+                best = score;
+                chosen_proxy = cand;
             }
         }
 
@@ -529,6 +731,13 @@ bool install(const std::filesystem::path& game_directory,
             const auto target_proxy = game_directory / chosen_proxy;
             if (!copy_if_needed(source_proxy, target_proxy, error)) {
                 return false;
+            }
+            // Moved to a better name: remove the previous proxy, but only if it is ours.
+            if (!previous.empty() && previous != chosen_proxy) {
+                const auto old_proxy = game_directory / previous;
+                if (std::filesystem::exists(old_proxy, code) && is_our_proxy(old_proxy)) {
+                    std::filesystem::remove(old_proxy, code);
+                }
             }
             std::string narrow_proxy;
             for (const wchar_t ch : chosen_proxy) narrow_proxy += static_cast<char>(ch);
@@ -588,6 +797,294 @@ bool uninstall(const std::filesystem::path& game_directory, std::wstring* error)
 
     // repro_vr.ini holds the user's settings: uninstalling leaves it alone.
     return true;
+}
+
+bool proxy_will_load(const std::filesystem::path& game_directory) {
+    const std::wstring proxy = read_marker_proxy(game_directory / kInstallMarkerName);
+    // 2 or more = the game process itself reaches the proxy (exe or its import chain).
+    return !proxy.empty() && proxy_load_evidence(game_directory, proxy.c_str()) >= 2;
+}
+
+// --- Legacy migration ---
+// Older builds registered ReproVR GLOBALLY (OpenXR ApiLayers\Implicit). Rules of the
+// migration, so that it can never leave a user's PC worse than it found it:
+//   1. Only entries whose manifest FILE NAME or CONTENT names ReproVR are touched.
+//   2. A known game is re-armed per game FIRST; if that fails (game running, locked
+//      file...) its global entry is KEPT and reported, so nothing stops working.
+//   3. Every entry is written to a backup file BEFORE deletion (--restore-legacy).
+//   4. Both registry views (64-bit and 32-bit/WOW6432Node) are scanned.
+//   5. --dry-run changes nothing; everything else is logged to migration.log.
+
+namespace {
+
+constexpr wchar_t kImplicitKey[] =
+    L"SOFTWARE\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit";
+
+std::wstring lower_ws(std::wstring s) {
+    for (auto& ch : s) ch = static_cast<wchar_t>(towlower(ch));
+    return s;
+}
+
+bool mentions_reprovr(const std::wstring& lowered) {
+    return lowered.find(L"reprovr") != std::wstring::npos ||
+           lowered.find(L"xrframebridge") != std::wstring::npos;
+}
+
+// A manifest is ours if its file name or its content names ReproVR / XRFrameBridge.
+// Never the folder: a foreign layer living in a folder called "reprovr" stays alone.
+bool is_reprovr_manifest(const std::wstring& value_name) {
+    const std::filesystem::path p(value_name);
+    if (mentions_reprovr(lower_ws(p.filename().wstring()))) return true;
+    std::ifstream f(p, std::ios::binary);
+    if (!f) return false;
+    std::string text(65536, ' ');
+    f.read(text.data(), static_cast<std::streamsize>(text.size()));
+    text.resize(static_cast<size_t>(f.gcount()));
+    for (auto& ch : text) {
+        ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+    }
+    return text.find("reprovr") != std::string::npos ||
+           text.find("xrframebridge") != std::string::npos;
+}
+
+std::filesystem::path game_dir_of_manifest(const std::filesystem::path& manifest) {
+    auto dir = manifest.parent_path();
+    if (lower_ws(dir.filename().wstring()) == L"reprovr") dir = dir.parent_path();
+    return dir;
+}
+
+std::wstring norm_dir(const std::filesystem::path& p) {
+    std::error_code ec;
+    auto c = std::filesystem::weakly_canonical(p, ec);
+    return lower_ws((ec ? p : c).lexically_normal().wstring());
+}
+
+// An unknown game folder that already holds a ReproVR layer DLL (next to the manifest or in
+// its "reprovr" sub-folder) was clearly set up with ReproVR: re-arming it per game loses nothing.
+bool has_reprovr_layer_dll(const std::filesystem::path& manifest) {
+    for (const auto& folder : {manifest.parent_path(), game_dir_of_manifest(manifest)}) {
+        std::error_code ec;
+        if (!std::filesystem::is_directory(folder, ec)) continue;
+        for (const auto& f : std::filesystem::directory_iterator(folder, ec)) {
+            const std::wstring n = lower_ws(f.path().filename().wstring());
+            if (n.rfind(L"xr_apilayer", 0) == 0 && mentions_reprovr(n) &&
+                f.path().extension() == L".dll") {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+std::wstring subkey_of(const LegacyOptions& o) {
+    return o.implicit_subkey.empty() ? std::wstring(kImplicitKey) : o.implicit_subkey;
+}
+
+std::filesystem::path default_store_dir() {
+    return appdata_directory() / kStoreFolder;
+}
+
+std::filesystem::path backup_path_of(const LegacyOptions& o) {
+    return o.backup_file.empty() ? default_store_dir() / L"legacy_global_backup.ini"
+                                 : o.backup_file;
+}
+
+std::filesystem::path log_path_of(const LegacyOptions& o) {
+    return o.log_file.empty() ? default_store_dir() / L"migration.log" : o.log_file;
+}
+
+void log_line(const LegacyOptions& o, LegacyRepairReport& r, const std::wstring& line) {
+    r.log.push_back(line);
+    if (o.dry_run) return;
+    std::error_code ec;
+    const auto path = log_path_of(o);
+    std::filesystem::create_directories(path.parent_path(), ec);
+    std::wofstream(path, std::ios::app) << line << L"\n";
+}
+
+// Appends one entry to the backup ini before it is deleted. False = not saved.
+bool backup_entry(const LegacyOptions& o, const LegacyGlobalLayer& e, DWORD data) {
+    const auto file = backup_path_of(o);
+    std::error_code ec;
+    std::filesystem::create_directories(file.parent_path(), ec);
+    const std::wstring section = L"entry:" + e.manifest.wstring();
+    return WritePrivateProfileStringW(section.c_str(), L"hive",
+                                      e.machine_wide ? L"HKLM" : L"HKCU", file.c_str()) &&
+           WritePrivateProfileStringW(section.c_str(), L"view32",
+                                      e.view32 ? L"1" : L"0", file.c_str()) &&
+           WritePrivateProfileStringW(section.c_str(), L"subkey", subkey_of(o).c_str(),
+                                      file.c_str()) &&
+           WritePrivateProfileStringW(section.c_str(), L"data",
+                                      std::to_wstring(data).c_str(), file.c_str());
+}
+
+REGSAM view_flag(bool view32) { return view32 ? KEY_WOW64_32KEY : KEY_WOW64_64KEY; }
+
+}  // namespace
+
+std::vector<LegacyGlobalLayer> find_legacy_global_layers(const LegacyOptions& options) {
+    std::vector<LegacyGlobalLayer> found;
+    const std::wstring subkey = subkey_of(options);
+    for (HKEY root : {HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE}) {
+        if (root == HKEY_LOCAL_MACHINE && !options.include_machine) continue;
+        for (bool view32 : {false, true}) {
+            // Measured: HKCU\SOFTWARE is shared by both views (each entry seen twice),
+            // only HKLM\SOFTWARE is redirected to WOW6432Node.
+            if (view32 && root == HKEY_CURRENT_USER) continue;
+            HKEY key = nullptr;
+            if (RegOpenKeyExW(root, subkey.c_str(), 0,
+                              KEY_QUERY_VALUE | view_flag(view32),
+                              &key) != ERROR_SUCCESS) {
+                continue;
+            }
+            for (DWORD i = 0;; ++i) {
+                wchar_t name[32768];
+                DWORD len = static_cast<DWORD>(std::size(name));
+                if (RegEnumValueW(key, i, name, &len, nullptr, nullptr, nullptr,
+                                  nullptr) != ERROR_SUCCESS) {
+                    break;
+                }
+                const std::wstring value(name, len);
+                if (is_reprovr_manifest(value)) {
+                    found.push_back({root == HKEY_LOCAL_MACHINE, view32,
+                                     std::filesystem::path(value)});
+                }
+            }
+            RegCloseKey(key);
+        }
+    }
+    return found;
+}
+
+bool is_process_elevated() {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+    TOKEN_ELEVATION e{};
+    DWORD size = sizeof(e);
+    const bool ok = GetTokenInformation(token, TokenElevation, &e, sizeof(e), &size) &&
+                    e.TokenIsElevated;
+    CloseHandle(token);
+    return ok;
+}
+
+LegacyRepairReport repair_legacy_global_layers(const std::filesystem::path& source,
+                                               const LegacyOptions& options) {
+    LegacyRepairReport report;
+    const auto entries = find_legacy_global_layers(options);
+    report.found = static_cast<int>(entries.size());
+    const auto games = load_games();
+    const std::wstring subkey = subkey_of(options);
+
+    for (const auto& entry : entries) {
+        const std::wstring hive = entry.machine_wide ? L"HKLM" : L"HKCU";
+        const std::wstring tag = hive + (entry.view32 ? L"[32] " : L"[64] ") +
+                                 entry.manifest.wstring();
+        const auto dir = game_dir_of_manifest(entry.manifest);
+
+        bool known = entry.manifest.filename() == kLayerManifest ||
+                     has_reprovr_layer_dll(entry.manifest);
+        for (const auto& g : games) {
+            known = known || norm_dir(g.directory) == norm_dir(dir);
+        }
+        std::error_code ec;
+        const bool dir_ok = std::filesystem::is_directory(dir, ec);
+
+        if (options.dry_run) {
+            log_line(options, report,
+                     L"[dry-run] " + tag +
+                         (known && dir_ok ? L" -> re-arm per game, then remove"
+                                          : L" -> remove (no ReproVR DLL in that folder: add the game in the list)"));
+            continue;
+        }
+
+        // (2) Re-arm per game BEFORE touching the registry. A failure keeps the entry.
+        if (known && dir_ok && !source.empty()) {
+            std::wstring err;
+            if (!install(dir, source, &err)) {
+                report.kept.push_back(entry.manifest);
+                log_line(options, report,
+                         L"KEPT (per-game install failed: " + err + L") " + tag);
+                continue;
+            }
+            ++report.reinstalled;
+            // Nothing in the folder shows the game loads the proxy: removing the global
+            // entry could silently turn ReproVR off in that game. Keep it for now.
+            if (!proxy_will_load(dir)) {
+                report.kept.push_back(entry.manifest);
+                report.unverified.push_back(dir);
+                log_line(options, report,
+                         L"KEPT (game may not load the per-game proxy) " + tag);
+                continue;
+            }
+        }
+
+        // (3) Back up, then delete. No backup = no deletion.
+        HKEY key = nullptr;
+        const HKEY root = entry.machine_wide ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
+        LSTATUS st = RegOpenKeyExW(root, subkey.c_str(), 0,
+                                   KEY_QUERY_VALUE | KEY_SET_VALUE | view_flag(entry.view32),
+                                   &key);
+        if (st != ERROR_SUCCESS) {
+            // Non-elevated HKLM: cannot even open for writing.
+            report.needs_admin.push_back(entry.manifest);
+            log_line(options, report, L"NEEDS ADMIN " + tag);
+            continue;
+        }
+        DWORD data = 0, type = 0, size = sizeof(data);
+        RegQueryValueExW(key, entry.manifest.c_str(), nullptr, &type,
+                         reinterpret_cast<LPBYTE>(&data), &size);
+        if (!backup_entry(options, entry, data)) {
+            RegCloseKey(key);
+            report.kept.push_back(entry.manifest);
+            log_line(options, report, L"KEPT (backup could not be written) " + tag);
+            continue;
+        }
+        st = RegDeleteValueW(key, entry.manifest.c_str());
+        RegCloseKey(key);
+        if (st != ERROR_SUCCESS && st != ERROR_FILE_NOT_FOUND) {
+            report.needs_admin.push_back(entry.manifest);
+            log_line(options, report, L"NEEDS ADMIN (delete refused) " + tag);
+            continue;
+        }
+        ++report.removed;
+        if (!(known && dir_ok)) report.not_rearmed.push_back(dir);
+        log_line(options, report, L"REMOVED " + tag);
+    }
+    return report;
+}
+
+int restore_legacy_global_layers(const LegacyOptions& options) {
+    const auto file = backup_path_of(options);
+    wchar_t sections[65536]{};
+    const DWORD n = GetPrivateProfileSectionNamesW(sections,
+                                                   static_cast<DWORD>(std::size(sections)),
+                                                   file.c_str());
+    int restored = 0;
+    for (const wchar_t* s = sections; n > 0 && *s != L'\0'; s += wcslen(s) + 1) {
+        const std::wstring section = s;
+        if (section.rfind(L"entry:", 0) != 0) continue;
+        const std::wstring manifest = section.substr(6);
+        const bool hklm = read_string(section.c_str(), L"hive", file) == L"HKLM";
+        const bool view32 = read_string(section.c_str(), L"view32", file) == L"1";
+        std::wstring subkey = read_string(section.c_str(), L"subkey", file);
+        if (subkey.empty()) subkey = kImplicitKey;
+        const DWORD data = static_cast<DWORD>(
+            _wtoi(read_string(section.c_str(), L"data", file).c_str()));
+        HKEY key = nullptr;
+        if (RegCreateKeyExW(hklm ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER, subkey.c_str(),
+                            0, nullptr, REG_OPTION_NON_VOLATILE,
+                            KEY_SET_VALUE | view_flag(view32), nullptr, &key,
+                            nullptr) != ERROR_SUCCESS) {
+            continue;
+        }
+        if (RegSetValueExW(key, manifest.c_str(), 0, REG_DWORD,
+                           reinterpret_cast<const BYTE*>(&data),
+                           sizeof(data)) == ERROR_SUCCESS) {
+            ++restored;
+        }
+        RegCloseKey(key);
+    }
+    return restored;
 }
 
 }  // namespace reprovr::setup

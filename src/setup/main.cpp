@@ -766,6 +766,13 @@ void choose(App& app, int setting_index, int option) {
     if (setting_index < 0 || setting_index >= static_cast<int>(table.size())) return;
     const Setting& setting = table[static_cast<std::size_t>(setting_index)];
     if (option < 0 || option >= static_cast<int>(setting.values.size())) return;
+    // Never write settings into a game ReproVR is not installed in: the list also
+    // shows games found automatically in Steam, and stray ini files there confused
+    // users (Reddit report, Cyberpunk 2077, 2026-11).
+    if (!installed(app.games[static_cast<std::size_t>(app.selected)].directory)) {
+        app.status = L"Install ReproVR for this game first to change its settings.";
+        return;
+    }
     if (write_setting(setting, option,
                       app.games[static_cast<std::size_t>(app.selected)].directory)) {
         app.status = std::wstring(setting.title) + L": " +
@@ -802,9 +809,14 @@ void activate(App& app, const Target& target) {
             pick_folder(app);
             break;
         case Action::install:
-            app.status = install(directory(), source_directory(), &error)
-                ? L"Installed into this game"
-                : (error.empty() ? L"Installation failed" : error);
+            if (install(directory(), source_directory(), &error)) {
+                app.status = proxy_will_load(directory())
+                    ? L"Installed into this game"
+                    : L"Installed. Note: this game may not start ReproVR on its own. "
+                      L"If you don't see it in game, this game is not supported yet.";
+            } else {
+                app.status = error.empty() ? L"Installation failed" : error;
+            }
             break;
         case Action::uninstall:
             app.status = uninstall(directory(), &error)
@@ -1037,7 +1049,110 @@ bool has_argument(const wchar_t* wanted) {
 
 }  // namespace
 
+// Relaunches this exe elevated with --repair-legacy and waits for it. HKLM entries
+// written by older (global) versions can only be removed by an administrator.
+bool run_elevated_repair() {
+    wchar_t exe[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    SHELLEXECUTEINFOW info{};
+    info.cbSize = sizeof(info);
+    info.fMask = SEE_MASK_NOCLOSEPROCESS;
+    info.lpVerb = L"runas";
+    info.lpFile = exe;
+    info.lpParameters = L"--repair-legacy";
+    info.nShow = SW_HIDE;
+    if (!ShellExecuteExW(&info) || info.hProcess == nullptr) return false;  // UAC refused
+    WaitForSingleObject(info.hProcess, 60000);
+    CloseHandle(info.hProcess);
+    return true;
+}
+
+// Fixes installs made by older versions that registered ReproVR GLOBALLY
+// (OpenXR ApiLayers\Implicit). See repair_legacy_global_layers for the safety rules.
+// Returns a status line, empty when there was nothing to fix.
+std::wstring migrate_legacy_global_layers(bool interactive) {
+    using namespace reprovr::setup;
+    auto report = repair_legacy_global_layers(source_directory());
+    if (report.found == 0) return {};
+
+    // Ask for admin only once: a refusal is remembered so the user is not nagged.
+    const auto store = store_path();
+    const bool declined =
+        GetPrivateProfileIntW(L"meta", L"legacy_admin_declined", 0, store.c_str()) != 0;
+    if (!report.needs_admin.empty() && interactive && !declined && !is_process_elevated()) {
+        const int answer = MessageBoxW(
+            nullptr,
+            L"This update makes ReproVR run only in the games you chose.\n\n"
+            L"An older version turned it on in every VR game. To fix this, Windows "
+            L"will ask for your permission.\n\n"
+            L"Your games and settings are kept.",
+            L"ReproVR update", MB_OKCANCEL | MB_ICONINFORMATION);
+        if (answer == IDOK && run_elevated_repair()) {
+            report = repair_legacy_global_layers(source_directory());
+        } else {
+            WritePrivateProfileStringW(L"meta", L"legacy_admin_declined", L"1", store.c_str());
+        }
+    }
+    // One plain information message, the most useful one first.
+    if (!report.needs_admin.empty()) {
+        return L"Info: ReproVR is still on in every VR game. Run this tool as administrator "
+               L"to finish the update.";
+    }
+    if (!report.unverified.empty()) {
+        return L"Info: some of your games still use the old setup, so they keep working.";
+    }
+    if (!report.kept.empty()) {
+        return L"Info: close your VR games, then open this tool again to finish the update.";
+    }
+    if (!report.not_rearmed.empty()) {
+        return L"Info: ReproVR now runs only in the games in your list. Add a game again "
+               L"if ReproVR no longer shows up in it.";
+    }
+    return L"Info: ReproVR now runs only in the games you installed it in.";
+}
+
+void print_console(const std::wstring& text) {
+    // Redirected stdout (pipe/file) first, else the parent console.
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (out != nullptr && out != INVALID_HANDLE_VALUE &&
+        GetFileType(out) != FILE_TYPE_CHAR && GetFileType(out) != FILE_TYPE_UNKNOWN) {
+        const int bytes = WideCharToMultiByte(CP_UTF8, 0, text.c_str(),
+                                              static_cast<int>(text.size()), nullptr, 0,
+                                              nullptr, nullptr);
+        std::string utf8(static_cast<size_t>(std::max(bytes, 0)), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()),
+                            utf8.data(), bytes, nullptr, nullptr);
+        DWORD written = 0;
+        WriteFile(out, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr);
+        return;
+    }
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+        DWORD written = 0;
+        WriteConsoleW(GetStdHandle(STD_OUTPUT_HANDLE), text.c_str(),
+                      static_cast<DWORD>(text.size()), &written, nullptr);
+    }
+}
+
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
+    if (has_argument(L"--restore-legacy")) {
+        // Rollback: puts back the global entries saved by a previous migration.
+        const int n = reprovr::setup::restore_legacy_global_layers();
+        print_console(L"restored " + std::to_wstring(n) + L" entr(y/ies)\n");
+        return 0;
+    }
+    if (has_argument(L"--repair-legacy")) {
+        // Headless. --dry-run changes nothing. Exit: 0 clean, 3 needs admin / kept.
+        reprovr::setup::LegacyOptions options;
+        options.dry_run = has_argument(L"--dry-run");
+        const auto report = reprovr::setup::repair_legacy_global_layers(
+            reprovr::setup::source_directory(), options);
+        std::wstring out = L"found " + std::to_wstring(report.found) + L", removed " +
+                           std::to_wstring(report.removed) + L", re-armed " +
+                           std::to_wstring(report.reinstalled) + L"\n";
+        for (const auto& l : report.log) out += l + L"\n";
+        print_console(out);
+        return (report.needs_admin.empty() && report.kept.empty()) ? 0 : 3;
+    }
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE))) {
         return 1;
@@ -1054,6 +1169,11 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
     refresh_games(g_app);
     g_app.status =
         g_app.games.empty() ? L"Step 1: add a game folder" : L"Ready";
+    if (!has_argument(L"--self-check")) {
+        const std::wstring migrated = migrate_legacy_global_layers(true);
+        if (!migrated.empty()) g_app.status = migrated;
+        refresh_games(g_app);
+    }
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);

@@ -480,7 +480,24 @@ if(WIN32 AND XRFG_BUILD_LAYER)
             target_compile_definitions(reprovr_setup_tests PRIVATE
                 NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
         endif()
-        add_test(NAME reprovr_setup_installer_tests COMMAND reprovr_setup_tests)
+        # PE fixtures for the proxy choice: which DLL a game really imports.
+        add_executable(reprovr_fixture_import_winmm tests/fixtures/pe_import_winmm.cpp)
+        target_link_libraries(reprovr_fixture_import_winmm PRIVATE winmm)
+        add_executable(reprovr_fixture_delay_winmm tests/fixtures/pe_import_winmm.cpp)
+        target_link_libraries(reprovr_fixture_delay_winmm PRIVATE winmm delayimp)
+        if(MSVC)
+            target_link_options(reprovr_fixture_delay_winmm PRIVATE /DELAYLOAD:winmm.dll)
+        endif()
+        add_executable(reprovr_fixture_import_version tests/fixtures/pe_import_version.cpp)
+        target_link_libraries(reprovr_fixture_import_version PRIVATE version)
+        add_dependencies(reprovr_setup_tests reprovr_fixture_import_winmm
+            reprovr_fixture_delay_winmm reprovr_fixture_import_version)
+
+        add_test(NAME reprovr_setup_installer_tests COMMAND reprovr_setup_tests
+            $<TARGET_FILE:reprovr_fixture_import_winmm>
+            $<TARGET_FILE:reprovr_fixture_delay_winmm>
+            $<TARGET_FILE:reprovr_fixture_import_version>
+            $<TARGET_FILE:ReproVR_version_proxy>)
 
         if(TARGET reprovr_setup)
             add_test(NAME reprovr_setup_self_check COMMAND reprovr_setup --self-check)
@@ -1022,6 +1039,15 @@ if(WIN32 AND XRFG_BUILD_LAYER)
                 WIN32_LEAN_AND_MEAN
                 XRFG_BUILDING_VERSION_PROXY_DLL)
         endif()
+        # dist/ ships the proxy too. v1.0.4 found dist/version.dll still at its v1.0.3
+        # build (the one registering ReproVR for every OpenXR game): nothing copied it.
+        add_custom_command(TARGET ReproVR_version_proxy POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E make_directory
+                "$<TARGET_FILE_DIR:ReproVR_version_proxy>/dist"
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "$<TARGET_FILE:ReproVR_version_proxy>"
+                "$<TARGET_FILE_DIR:ReproVR_version_proxy>/dist"
+            VERBATIM)
 
         add_executable(xrfg_upscaler_auto_hook_tests
             tests/upscaler_auto_hook_tests.cpp)
